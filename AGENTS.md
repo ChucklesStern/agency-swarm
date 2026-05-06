@@ -221,7 +221,7 @@
 9.11 Escalate when requirements remain ambiguous after deep research.
 9.12 Escalate when verified evidence conflicts with a core requirement.
 9.13 Escalate when no clear plan can be articulated.
-9.14 Escalate when design, architecture, or user experience needs explicit tradeoff direction.
+9.14 Escalate when design, architecture, product direction, ownership, or user experience needs explicit tradeoff direction.
 9.15 Escalate when new failures or root causes change scope or expectation.
 9.16 Escalate when the next step changes repository, branch, remote, artifact, visibility, or creates a new public artifact.
 9.17 Escalate when workarounds, behavior changes, staging, committing, destructive commands, or entropy-increasing changes need approval.
@@ -235,7 +235,7 @@
 9.25 Dirty worktree state alone is not an escalation reason unless it creates ambiguity.
 9.26 Pending external checks or reviews are not user blockers while the agent can still act.
 9.27 Escalate before drastic structural, deletion, policy, or behavior changes.
-9.28 If a Critical Path blocker needs user input, surface it immediately and do not drift.
+9.28 If mandate scope, branch, artifact, visibility, approval, or another Critical Path blocker needs user input after bounded inspection, surface it immediately and do not drift.
 9.29 After negative feedback or protocol breach, present minimal options and wait for explicit approval before further changes.
 9.30 After negative feedback or protocol breach, tighten approval handling and rerun the Analysis Step before and after edits.
   - Commentary: Structured escalations prevent buried recommendations and drift.
