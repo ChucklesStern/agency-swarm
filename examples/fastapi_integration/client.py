@@ -191,7 +191,13 @@ def test_cancel_endpoint(cancel_mode: Literal["immediate", "after_turn"] | None 
         "message": "Write a 500 word poem.",
         "chat_history": [],
     }
-    stream_response = requests.post(stream_url, json=stream_payload, stream=True)
+    run_id_timeout_seconds = 10.0
+    stream_response = requests.post(
+        stream_url,
+        json=stream_payload,
+        stream=True,
+        timeout=(10, run_id_timeout_seconds),
+    )
     if stream_response.status_code != 200:
         print(f"❌ Could not start streaming run: {stream_response.status_code}")
         print(stream_response.text)
@@ -205,66 +211,72 @@ def test_cancel_endpoint(cancel_mode: Literal["immediate", "after_turn"] | None 
     cancelled = False
 
     print("⏳ Waiting for run_id...")
-    for line_str in stream_response.iter_lines(chunk_size=1, decode_unicode=True):
-        if not line_str:
-            continue
-        if not PARSE_STREAM:
-            print(line_str)
-        if line_str.startswith("event: meta"):
-            continue
-        if not line_str.startswith("data: "):
-            continue
+    run_id_deadline = time.monotonic() + run_id_timeout_seconds
+    try:
+        for line_str in stream_response.iter_lines(chunk_size=1, decode_unicode=True):
+            if run_id is None and time.monotonic() >= run_id_deadline:
+                break
+            if not line_str:
+                continue
+            if not PARSE_STREAM:
+                print(line_str)
+            if line_str.startswith("event: meta"):
+                continue
+            if not line_str.startswith("data: "):
+                continue
 
-        data_str = line_str[6:]
-        if data_str == "[DONE]":
-            print("\n\n✅ Stream complete")
-            break
+            data_str = line_str[6:]
+            if data_str == "[DONE]":
+                print("\n\n✅ Stream complete")
+                break
 
-        try:
-            data = json.loads(data_str)
-        except json.JSONDecodeError:
-            continue
+            try:
+                data = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
 
-        if run_id is None and "run_id" in data:
-            run_id = data["run_id"]
-            streaming_state["run_id"] = run_id
-            print(f"✅ Captured run_id: {run_id}")
-            time.sleep(3)
-            print(f"\n📤 Attempting to cancel run {run_id} (mode={cancel_mode})")
-            payload = {"run_id": run_id, "cancel_mode": cancel_mode}
-            response = requests.post(cancel_url, json=payload)
-            if response.status_code == 404:
-                print(f"✅ Correctly returned 404: {response.json()}")
-            elif response.status_code == 200:
-                cancelled = True
-                payload = response.json()
-                print("✅ Cancelled run; response payload:")
-                print(json.dumps(payload, indent=2))
-            else:
-                print(f"❌ Unexpected status: {response.status_code}")
-                print(response.text)
-            continue
+            if run_id is None and "run_id" in data:
+                run_id = data["run_id"]
+                streaming_state["run_id"] = run_id
+                print(f"✅ Captured run_id: {run_id}")
+                time.sleep(3)
+                print(f"\n📤 Attempting to cancel run {run_id} (mode={cancel_mode})")
+                payload = {"run_id": run_id, "cancel_mode": cancel_mode}
+                response = requests.post(cancel_url, json=payload)
+                if response.status_code == 404:
+                    print(f"✅ Correctly returned 404: {response.json()}")
+                elif response.status_code == 200:
+                    cancelled = True
+                    payload = response.json()
+                    print("✅ Cancelled run; response payload:")
+                    print(json.dumps(payload, indent=2))
+                else:
+                    print(f"❌ Unexpected status: {response.status_code}")
+                    print(response.text)
+                continue
 
-        if "new_messages" in data:
-            print(f"\n📨 Final messages: {len(data.get('new_messages', []))} messages")
-            continue
+            if "new_messages" in data:
+                print(f"\n📨 Final messages: {len(data.get('new_messages', []))} messages")
+                continue
 
-        if "data" in data and isinstance(data["data"], dict):
-            nested_data = data["data"]
-            if "data" in nested_data and isinstance(nested_data["data"], dict):
-                inner_data = nested_data["data"]
-                if "type" in inner_data and ".done" in inner_data["type"]:
-                    add_newline = True
-                elif "delta" in inner_data:
-                    delta_text = inner_data["delta"]
-                    if isinstance(delta_text, str):
-                        if add_newline:
-                            print("\n")
-                        print(delta_text, end="", flush=True)
-                        accumulated_text += delta_text
-                        add_newline = False
-
-    stream_response.close()
+            if "data" in data and isinstance(data["data"], dict):
+                nested_data = data["data"]
+                if "data" in nested_data and isinstance(nested_data["data"], dict):
+                    inner_data = nested_data["data"]
+                    if "type" in inner_data and ".done" in inner_data["type"]:
+                        add_newline = True
+                    elif "delta" in inner_data:
+                        delta_text = inner_data["delta"]
+                        if isinstance(delta_text, str):
+                            if add_newline:
+                                print("\n")
+                            print(delta_text, end="", flush=True)
+                            accumulated_text += delta_text
+                            add_newline = False
+    except requests.exceptions.ReadTimeout:
+        pass
+    finally:
+        stream_response.close()
     if run_id is None:
         print("❌ Timeout waiting for run_id; cannot demonstrate cancel endpoint.")
         return
