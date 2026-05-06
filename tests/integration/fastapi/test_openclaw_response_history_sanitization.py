@@ -14,6 +14,7 @@ from agents.items import ModelResponse, TResponseInputItem, TResponseStreamEvent
 from agents.model_settings import ModelSettings
 from agents.models.interface import Model, ModelTracing
 from agents.usage import Usage
+from openai import OpenAI
 from openai.types.responses import (
     Response,
     ResponseCompletedEvent,
@@ -32,10 +33,15 @@ from openai.types.responses.response_usage import InputTokensDetails, OutputToke
 from agency_swarm import Agency, Agent
 from agency_swarm.integrations.fastapi_utils.endpoint_handlers import (
     ActiveRunRegistry,
+    generate_chat_name,
     make_response_endpoint,
     make_stream_endpoint,
 )
 from agency_swarm.integrations.fastapi_utils.request_models import BaseRequest
+from agency_swarm.messages.response_input_sanitizer import (
+    REASONING_ENCRYPTED_CONTENT_INCLUDE,
+    sanitize_store_false_responses_input,
+)
 
 
 class _TrackingResponsesModel(Model):
@@ -44,6 +50,7 @@ class _TrackingResponsesModel(Model):
         self.issued_response_ids: list[str] = []
         self.seen_previous_response_ids: list[str | None] = []
         self.seen_inputs: list[str | list[TResponseInputItem]] = []
+        self.seen_model_settings: list[ModelSettings] = []
 
     async def get_response(
         self,
@@ -60,6 +67,7 @@ class _TrackingResponsesModel(Model):
         prompt: ResponsePromptParam | None,
     ) -> ModelResponse:
         self.seen_inputs.append(copy.deepcopy(input) if isinstance(input, list) else input)
+        self.seen_model_settings.append(copy.deepcopy(model_settings))
         self.seen_previous_response_ids.append(previous_response_id)
         response_id = self._issue_response_id()
         return _build_model_response(text="OK", response_id=response_id)
@@ -79,6 +87,7 @@ class _TrackingResponsesModel(Model):
         prompt: ResponsePromptParam | None,
     ) -> AsyncIterator[TResponseStreamEvent]:
         self.seen_inputs.append(copy.deepcopy(input) if isinstance(input, list) else input)
+        self.seen_model_settings.append(copy.deepcopy(model_settings))
         self.seen_previous_response_ids.append(previous_response_id)
         response_id = self._issue_response_id()
         return _stream_text_events(text="OK", model_name=self.model, response_id=response_id)
@@ -246,6 +255,215 @@ def _build_agency_factory(model: _TrackingResponsesModel):
     return create_agency
 
 
+def _build_store_false_agency_factory(model: _TrackingResponsesModel):
+    def create_agency(load_threads_callback=None, save_threads_callback=None):
+        agent = Agent(
+            name="TestAgent",
+            instructions="Base instructions",
+            model=model,
+            model_settings=ModelSettings(store=False, temperature=0.0),
+        )
+        return Agency(
+            agent,
+            load_threads_callback=load_threads_callback,
+            save_threads_callback=save_threads_callback,
+        )
+
+    return create_agency
+
+
+def _history_with_encrypted_reasoning() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "reasoning",
+            "id": "rs_reasoning_123",
+            "summary": [{"type": "summary_text", "text": "looked up the answer", "id": "rs_summary_123"}],
+            "content": [{"type": "reasoning_text", "text": "private", "id": "rs_content_123"}],
+            "encrypted_content": "encrypted_reasoning",
+            "previous_response_id": "resp_previous_123",
+            "status": "completed",
+            "agent": "TestAgent",
+            "callerAgent": None,
+            "timestamp": 1,
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "id": "msg_answer_123",
+            "content": [{"type": "output_text", "text": "The answer is 42.", "annotations": [], "id": "msg_text_123"}],
+            "conversation_id": "conv_previous_123",
+            "status": "completed",
+            "agent": "TestAgent",
+            "callerAgent": None,
+            "timestamp": 2,
+        },
+        {
+            "type": "function_call",
+            "id": "fc_lookup_123",
+            "call_id": "call_lookup_123",
+            "name": "lookup",
+            "arguments": "{}",
+            "status": "completed",
+            "agent": "TestAgent",
+            "callerAgent": None,
+            "timestamp": 3,
+        },
+        {
+            "type": "function_call_output",
+            "id": "fc_output_123",
+            "call_id": "call_lookup_123",
+            "output": "42",
+            "status": "completed",
+            "agent": "TestAgent",
+            "callerAgent": None,
+            "timestamp": 4,
+        },
+        {"type": "item_reference", "id": "msg_answer_123", "agent": "TestAgent", "callerAgent": None, "timestamp": 5},
+    ]
+
+
+def _history_with_unencrypted_reasoning() -> list[dict[str, Any]]:
+    history = _history_with_encrypted_reasoning()
+    reasoning = next(item for item in history if item.get("type") == "reasoning")
+    reasoning.pop("encrypted_content")
+    return history
+
+
+def _history_with_unencrypted_reasoning_before_tool_pair() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "reasoning",
+            "id": "rs_reasoning_123",
+            "summary": [{"type": "summary_text", "text": "looked up the answer"}],
+            "status": "completed",
+        },
+        {
+            "type": "function_call",
+            "id": "fc_lookup_123",
+            "call_id": "call_lookup_123",
+            "name": "lookup",
+            "arguments": "{}",
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "id": "fc_output_123",
+            "call_id": "call_lookup_123",
+            "output": "42",
+            "status": "completed",
+        },
+        {"role": "user", "content": "again"},
+    ]
+
+
+def _history_with_unencrypted_reasoning_before_current_user_message() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "reasoning",
+            "id": "rs_reasoning_123",
+            "summary": [{"type": "summary_text", "text": "looked up the answer"}],
+            "status": "completed",
+        },
+        {"role": "user", "content": "again"},
+    ]
+
+
+def _history_with_unencrypted_reasoning_before_builtin_tool_call() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "reasoning",
+            "id": "rs_reasoning_123",
+            "summary": [{"type": "summary_text", "text": "searched the web"}],
+            "status": "completed",
+        },
+        {
+            "type": "web_search_call",
+            "id": "ws_lookup_123",
+            "status": "completed",
+        },
+        {"role": "user", "content": "again"},
+    ]
+
+
+def _history_with_unencrypted_reasoning_before_tool_search_pair() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "reasoning",
+            "id": "rs_reasoning_123",
+            "summary": [{"type": "summary_text", "text": "searched local tools"}],
+            "status": "completed",
+        },
+        {
+            "type": "tool_search_call",
+            "id": "ts_lookup_123",
+            "call_id": "call_lookup_123",
+            "arguments": {},
+            "execution": "client",
+        },
+        {
+            "type": "tool_search_output",
+            "id": "ts_output_123",
+            "call_id": "call_lookup_123",
+            "tools": [],
+            "execution": "client",
+        },
+        {"role": "user", "content": "again"},
+    ]
+
+
+def _history_with_user_and_legacy_unencrypted_reasoning_turn() -> list[dict[str, Any]]:
+    return [
+        {"role": "user", "content": "what is 2+2?"},
+        {
+            "type": "reasoning",
+            "id": "rs_reasoning_123",
+            "summary": [{"type": "summary_text", "text": "calculated"}],
+            "status": "completed",
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "id": "msg_answer_123",
+            "content": [{"type": "output_text", "text": "4", "annotations": []}],
+            "status": "completed",
+        },
+        {"role": "user", "content": "thanks"},
+    ]
+
+
+def _assert_store_false_input_preserves_stateless_reasoning(model_input: str | list[TResponseInputItem]) -> None:
+    assert isinstance(model_input, list)
+    reasoning = next(item for item in model_input if isinstance(item, dict) and item.get("type") == "reasoning")
+    assert reasoning["id"] == "rs_reasoning_123"
+    assert reasoning["encrypted_content"] == "encrypted_reasoning"
+    assert "previous_response_id" not in reasoning
+    assert all("id" not in item for item in reasoning["summary"])
+    assert all("id" not in item for item in reasoning["content"])
+
+    assistant_message = next(item for item in model_input if isinstance(item, dict) and item.get("type") == "message")
+    assert "conversation_id" not in assistant_message
+    assert all("id" not in item for item in assistant_message["content"])
+    function_call = next(item for item in model_input if isinstance(item, dict) and item.get("type") == "function_call")
+    tool_output = next(
+        item for item in model_input if isinstance(item, dict) and item.get("type") == "function_call_output"
+    )
+    assert function_call["call_id"] == "call_lookup_123"
+    assert tool_output["call_id"] == "call_lookup_123"
+
+
+def _assert_unencrypted_reasoning_is_dropped(model_input: str | list[TResponseInputItem]) -> None:
+    assert isinstance(model_input, list)
+    assert all(not (isinstance(item, dict) and item.get("type") == "reasoning") for item in model_input)
+    assert all(not (isinstance(item, dict) and item.get("id") == "msg_answer_123") for item in model_input)
+    assert model_input == [{"role": "user", "content": "again", "type": "message"}]
+
+
+def _assert_store_false_requests_encrypted_reasoning(model_settings: ModelSettings) -> None:
+    assert model_settings.store is False
+    assert model_settings.response_include is not None
+    assert REASONING_ENCRYPTED_CONTENT_INCLUDE in model_settings.response_include
+
+
 def _assert_history_input_has_no_response_ids(model_input: str | list[TResponseInputItem]) -> None:
     assert isinstance(model_input, list)
     leaked_response_ids = [item for item in model_input if isinstance(item, dict) and "response_id" in item]
@@ -293,6 +511,251 @@ async def test_stream_endpoint_replays_returned_history_without_hidden_response_
 
     assert model.seen_previous_response_ids == [None, None]
     _assert_history_input_has_no_response_ids(model.seen_inputs[1])
+
+
+@pytest.mark.asyncio
+async def test_response_endpoint_store_false_requests_and_preserves_encrypted_reasoning() -> None:
+    model = _TrackingResponsesModel()
+    handler = make_response_endpoint(BaseRequest, _build_store_false_agency_factory(model), lambda: None)
+
+    await handler(BaseRequest(message="again", chat_history=_history_with_encrypted_reasoning()), token=None)
+
+    _assert_store_false_requests_encrypted_reasoning(model.seen_model_settings[0])
+    _assert_store_false_input_preserves_stateless_reasoning(model.seen_inputs[0])
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_store_false_drops_only_unencrypted_reasoning() -> None:
+    model = _TrackingResponsesModel()
+    handler = make_stream_endpoint(
+        BaseRequest,
+        _build_store_false_agency_factory(model),
+        lambda: None,
+        ActiveRunRegistry(),
+    )
+
+    response = await handler(
+        http_request=_StubRequest(),
+        request=BaseRequest(message="again", chat_history=_history_with_unencrypted_reasoning()),
+        token=None,
+    )
+    _chunks = [chunk async for chunk in response.body_iterator]
+
+    _assert_store_false_requests_encrypted_reasoning(model.seen_model_settings[0])
+    _assert_unencrypted_reasoning_is_dropped(model.seen_inputs[0])
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_store_false_drops_legacy_reasoning_span_and_keeps_current_user() -> None:
+    model = _TrackingResponsesModel()
+    handler = make_stream_endpoint(
+        BaseRequest,
+        _build_store_false_agency_factory(model),
+        lambda: None,
+        ActiveRunRegistry(),
+    )
+    legacy_history = _history_with_unencrypted_reasoning_before_tool_pair()[:-1]
+
+    response = await handler(
+        http_request=_StubRequest(),
+        request=BaseRequest(message="again", chat_history=legacy_history),
+        token=None,
+    )
+    _chunks = [chunk async for chunk in response.body_iterator]
+
+    _assert_store_false_requests_encrypted_reasoning(model.seen_model_settings[0])
+    assert model.seen_inputs[0] == [{"role": "user", "content": "again", "type": "message"}]
+
+
+def test_store_false_sanitizer_drops_dependent_followers_after_unencrypted_reasoning() -> None:
+    sanitized = sanitize_store_false_responses_input(_history_with_unencrypted_reasoning_before_tool_pair())
+
+    assert sanitized == [{"role": "user", "content": "again"}]
+
+
+def test_store_false_sanitizer_preserves_current_user_after_unencrypted_reasoning() -> None:
+    sanitized = sanitize_store_false_responses_input(_history_with_unencrypted_reasoning_before_current_user_message())
+
+    assert sanitized == [{"role": "user", "content": "again"}]
+
+
+def test_store_false_sanitizer_drops_builtin_tool_follower_after_unencrypted_reasoning() -> None:
+    sanitized = sanitize_store_false_responses_input(_history_with_unencrypted_reasoning_before_builtin_tool_call())
+
+    assert sanitized == [{"role": "user", "content": "again"}]
+
+
+def test_store_false_sanitizer_drops_tool_search_pair_after_unencrypted_reasoning() -> None:
+    sanitized = sanitize_store_false_responses_input(_history_with_unencrypted_reasoning_before_tool_search_pair())
+
+    assert sanitized == [{"role": "user", "content": "again"}]
+
+
+def test_store_false_sanitizer_drops_full_legacy_reasoning_turn() -> None:
+    sanitized = sanitize_store_false_responses_input(_history_with_user_and_legacy_unencrypted_reasoning_turn())
+
+    assert sanitized == [{"role": "user", "content": "thanks"}]
+
+
+def test_store_false_sanitizer_drops_late_reference_to_removed_reasoning() -> None:
+    sanitized = sanitize_store_false_responses_input(
+        [
+            {
+                "type": "reasoning",
+                "id": "rs_reasoning_123",
+                "summary": [{"type": "summary_text", "text": "legacy"}],
+                "status": "completed",
+            },
+            {"role": "user", "content": "again"},
+            {"type": "item_reference", "id": "rs_reasoning_123"},
+        ]
+    )
+
+    assert sanitized == [{"role": "user", "content": "again"}]
+
+
+def test_store_false_sanitizer_skips_non_messages_and_nested_unencrypted_reasoning() -> None:
+    sanitized = sanitize_store_false_responses_input(
+        [
+            {
+                "type": "reasoning",
+                "id": "rs_reasoning_123",
+                "summary": [{"type": "summary_text", "text": "legacy"}],
+                "status": "completed",
+            },
+            "ignored legacy output",
+            {
+                "role": "user",
+                "content": [
+                    {"type": "reasoning", "summary": [{"type": "summary_text", "text": "nested"}]},
+                    {"type": "input_text", "text": "again"},
+                ],
+            },
+        ]
+    )
+
+    assert sanitized == [{"role": "user", "content": [{"type": "input_text", "text": "again"}]}]
+
+
+def test_store_false_sanitizer_drops_prior_provider_outputs_before_legacy_reasoning() -> None:
+    sanitized = sanitize_store_false_responses_input(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "stale"}],
+            },
+            {
+                "type": "reasoning",
+                "id": "rs_reasoning_123",
+                "summary": [{"type": "summary_text", "text": "legacy"}],
+                "status": "completed",
+            },
+            {"role": "user", "content": "again"},
+        ]
+    )
+
+    assert sanitized == [{"role": "user", "content": "again"}]
+
+
+def test_store_false_sanitizer_keeps_prior_encrypted_reasoning_boundary() -> None:
+    encrypted_reasoning = _history_with_encrypted_reasoning()[0]
+    sanitized = sanitize_store_false_responses_input(
+        [
+            encrypted_reasoning,
+            {
+                "type": "reasoning",
+                "id": "rs_legacy_456",
+                "summary": [{"type": "summary_text", "text": "legacy"}],
+                "status": "completed",
+            },
+            {"role": "user", "content": "again"},
+        ]
+    )
+
+    assert sanitized == [
+        {
+            "type": "reasoning",
+            "id": "rs_reasoning_123",
+            "summary": [{"type": "summary_text", "text": "looked up the answer"}],
+            "content": [{"type": "reasoning_text", "text": "private"}],
+            "encrypted_content": "encrypted_reasoning",
+            "status": "completed",
+            "agent": "TestAgent",
+            "timestamp": 1,
+        },
+        {"role": "user", "content": "again"},
+    ]
+
+
+def test_live_openai_store_false_replays_encrypted_reasoning() -> None:
+    """Live OpenAI proof for stateless Responses reasoning replay."""
+    client = OpenAI()
+    first = client.responses.create(
+        model="gpt-5.4-nano",
+        input="Compute 37*41. Return only the number.",
+        store=False,
+        include=[REASONING_ENCRYPTED_CONTENT_INCLUDE],
+        reasoning={"effort": "high"},
+        max_output_tokens=64,
+    )
+    first_items = [item.model_dump(exclude_none=True) for item in first.output]
+    reasoning_items = [item for item in first_items if item.get("type") == "reasoning"]
+
+    assert first.output_text.strip() == "1517"
+    assert reasoning_items
+    assert all(item.get("encrypted_content") for item in reasoning_items)
+
+    replay_input = sanitize_store_false_responses_input(
+        [
+            *first_items,
+            {
+                "role": "user",
+                "content": "What exact number did you just return? Return only that same number.",
+            },
+        ]
+    )
+    second = client.responses.create(
+        model="gpt-5.4-nano",
+        input=replay_input,
+        store=False,
+        include=[REASONING_ENCRYPTED_CONTENT_INCLUDE],
+        reasoning={"effort": "high"},
+        max_output_tokens=64,
+    )
+
+    assert second.output_text.strip() == "1517"
+
+
+@pytest.mark.asyncio
+async def test_codex_chat_name_store_false_uses_encrypted_reasoning_include() -> None:
+    captured_inputs: list[list[TResponseInputItem]] = []
+    captured_includes: list[list[str]] = []
+
+    class _TitleStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _Responses:
+        async def create(self, **kwargs: Any) -> _TitleStream:
+            captured_inputs.append(copy.deepcopy(kwargs["input"]))
+            captured_includes.append(copy.deepcopy(kwargs["include"]))
+            return _TitleStream()
+
+    class _Client:
+        base_url = "https://chatgpt.com/backend-api/codex"
+        responses = _Responses()
+
+    with pytest.raises(ValueError, match="Generated chat name"):
+        await generate_chat_name(_history_with_encrypted_reasoning(), openai_client=_Client())  # type: ignore[arg-type]
+
+    assert captured_inputs
+    assert captured_includes
+    assert all(include == [REASONING_ENCRYPTED_CONTENT_INCLUDE] for include in captured_includes)
+    _assert_store_false_input_preserves_stateless_reasoning(captured_inputs[0])
 
 
 @pytest.mark.asyncio

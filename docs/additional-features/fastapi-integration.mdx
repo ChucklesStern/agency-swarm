@@ -285,7 +285,7 @@ print("Response:", agency_response.json())
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `message` | string | Yes | User message to start or continue the conversation. |
+| `message` | string or structured list | Yes | User message to start or continue the conversation. Use a structured Responses input list for inline `input_text`, `input_image`, or `input_file` content. |
 | `chat_history` | list | No | Flat list of prior messages with metadata (`agent`, `callerAgent`, `timestamp`) to preserve context. |
 | `recipient_agent` | string | No | Target agent when you want to direct the next turn. |
 | `file_ids` | list | No | IDs of already uploaded files to attach. |
@@ -425,6 +425,24 @@ Attach files to agency requests using `file_ids` or `file_urls` in the payload:
   "file_urls": {"report.pdf": "https://example.com/report.pdf"}
 }
 ```
+
+For inline Responses attachments that should not be uploaded through the Files API, pass a structured `message`:
+
+```json
+{
+  "message": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_image", "image_url": "data:image/png;base64,...", "detail": "auto"},
+        {"type": "input_text", "text": "Describe this image"}
+      ]
+    }
+  ]
+}
+```
+
+With manual `chat_history`, clients can keep structured attachment parts in history so follow-up turns work without reattaching. This may resend inline attachment content or references; it does not reuse server-managed state, `previous_response_id`, Conversations, or `file_id` values.
 
 The response includes `file_ids_map` with the uploaded file IDs:
 

@@ -3,9 +3,11 @@
 The end-to-end behavior is covered in integration tests under `tests/integration/fastapi/`.
 """
 
-import pytest
-from pydantic import ValidationError
+import logging
 
+import pytest
+
+from agency_swarm.integrations.fastapi_utils import request_models
 from agency_swarm.integrations.fastapi_utils.request_models import BaseRequest, ClientConfig
 
 
@@ -43,21 +45,29 @@ def test_client_config_accepts_optional_overrides(payload: dict, expected: dict)
         assert getattr(config, key) == value
 
 
-def test_client_config_accepts_litellm_keys_when_available() -> None:
-    """litellm_keys should validate when LiteLLM is installed."""
-    try:
-        config = ClientConfig(
-            litellm_keys={
-                "anthropic": "sk-ant-xxx",
-                "gemini": "AIza...",
-            }
-        )
-    except ValidationError as exc:
-        assert "litellm_keys requires litellm to be installed" in str(exc)
-        return
+def test_client_config_accepts_litellm_keys_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """litellm_keys should round-trip when litellm is available."""
+    monkeypatch.setattr(request_models, "_LITELLM_INSTALLED", True)
+    config = ClientConfig(
+        litellm_keys={
+            "anthropic": "sk-ant-xxx",
+            "gemini": "AIza...",
+        }
+    )
     assert config.litellm_keys is not None
     assert config.litellm_keys["anthropic"] == "sk-ant-xxx"
     assert config.litellm_keys["gemini"] == "AIza..."
+
+
+def test_client_config_drops_litellm_keys_when_litellm_missing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Without litellm, litellm_keys should be dropped (not 422'd) and a warning logged."""
+    monkeypatch.setattr(request_models, "_LITELLM_INSTALLED", False)
+    with caplog.at_level(logging.WARNING, logger=request_models.__name__):
+        config = ClientConfig(litellm_keys={"anthropic": "sk-ant-xxx"})
+    assert config.litellm_keys is None
+    assert any("litellm is not installed" in record.message for record in caplog.records)
 
 
 def test_base_request_client_config_roundtrip() -> None:
@@ -185,6 +195,40 @@ def test_litellm_anthropic_does_not_use_generic_api_key_fallback() -> None:
     assert agent.model.api_key is None
 
 
+def test_litellm_anthropic_does_not_use_codex_base_url_fallback() -> None:
+    """Codex browser-auth base_url must not override non-OpenAI LiteLLM providers."""
+    pytest.importorskip("agents")
+    pytest.importorskip("agents.extensions.models.litellm_model")
+
+    from agents.extensions.models.litellm_model import LitellmModel
+
+    from agency_swarm import Agent
+    from agency_swarm.integrations.fastapi_utils.endpoint_handlers import apply_openai_client_config
+    from agency_swarm.integrations.fastapi_utils.request_models import ClientConfig
+
+    class _Agency:
+        def __init__(self, agent: Agent):
+            self.agents = {"A": agent}
+
+    original_model = LitellmModel(model="anthropic/claude-sonnet-4", base_url=None, api_key=None)
+    agent = Agent(name="A", instructions="x", model=original_model)
+    agency = _Agency(agent)
+
+    apply_openai_client_config(
+        agency,
+        ClientConfig(
+            api_key="sk-openai-gateway",
+            base_url="https://chatgpt.com/backend-api/codex",
+            litellm_keys={"anthropic": "sk-ant"},
+        ),
+    )
+
+    assert isinstance(agent.model, LitellmModel)
+    assert agent.model.model == "anthropic/claude-sonnet-4"
+    assert agent.model.base_url is None
+    assert agent.model.api_key == "sk-ant"
+
+
 def test_litellm_openai_provider_can_use_generic_api_key_fallback() -> None:
     """For openai-ish LiteLLM providers, config.api_key remains a valid fallback."""
     pytest.importorskip("agents")
@@ -236,6 +280,7 @@ def test_openai_client_override_applies_codex_compatibility_model_settings() -> 
     assert agent.model_settings is not None
     assert agent.model_settings.store is False
     assert agent.model_settings.truncation is None
+    assert "reasoning.encrypted_content" in (agent.model_settings.response_include or [])
 
 
 def test_snapshot_restore_preserves_model_settings_headers() -> None:

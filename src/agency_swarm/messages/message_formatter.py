@@ -3,10 +3,12 @@
 import json
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from agents import (
     MessageOutputItem,
+    ModelSettings,
     RunItem,
     ToolCallItem,
     TResponseInputItem,
@@ -21,7 +23,15 @@ from openai.types.responses import (
 )
 from openai.types.responses.response_file_search_tool_call import Result as ResponseFileSearchResult
 
+from agency_swarm.messages.response_input_sanitizer import (
+    REASONING_ENCRYPTED_CONTENT_INCLUDE,
+    ensure_store_false_reasoning_encrypted_content,
+    sanitize_store_false_responses_input,
+)
+
 if TYPE_CHECKING:
+    from agents import RunConfig
+
     from agency_swarm.agent.core import AgencyContext, Agent
 
 logger = logging.getLogger(__name__)
@@ -251,6 +261,7 @@ class MessageFormatter:
         agent_run_id: str | None = None,
         parent_run_id: str | None = None,
         run_trace_id: str | None = None,
+        run_config_override: "RunConfig | None" = None,
     ) -> list[TResponseInputItem]:
         """Prepare conversation history for the runner."""
         # Get thread manager from context (required)
@@ -297,6 +308,8 @@ class MessageFormatter:
         # Strip agency metadata before sending to OpenAI
         history_for_runner = MessageFormatter.strip_agency_metadata(history_for_runner)
         history_for_runner = MessageFormatter.sanitize_replayed_tool_item_ids(history_for_runner)
+        if MessageFormatter._ensure_store_false_replay_settings(agent, run_config_override):
+            history_for_runner = sanitize_store_false_responses_input(history_for_runner)
         return history_for_runner  # type: ignore[return-value]
 
     @staticmethod
@@ -396,6 +409,30 @@ class MessageFormatter:
                 continue
             sanitized.append(msg)
         return sanitized
+
+    @staticmethod
+    def _ensure_store_false_replay_settings(agent: "Agent", run_config_override: "RunConfig | None") -> bool:
+        agent_settings = getattr(agent, "model_settings", None)
+        run_settings = getattr(run_config_override, "model_settings", None) if run_config_override else None
+        effective_settings = agent_settings.resolve(run_settings) if agent_settings is not None else run_settings
+        if not isinstance(effective_settings, ModelSettings):
+            return False
+        if getattr(effective_settings, "store", None) is not False:
+            return False
+
+        if run_config_override is not None and run_settings is not None:
+            response_include = run_settings.response_include
+            if response_include is None and isinstance(agent_settings, ModelSettings):
+                response_include = agent_settings.response_include
+            response_include = list(response_include or [])
+            if REASONING_ENCRYPTED_CONTENT_INCLUDE not in response_include:
+                response_include.append(REASONING_ENCRYPTED_CONTENT_INCLUDE)
+            run_settings = replace(run_settings, response_include=response_include)
+            run_config_override.model_settings = run_settings
+        else:
+            ensure_store_false_reasoning_encrypted_content(effective_settings)
+            agent.model_settings = effective_settings
+        return True
 
     @staticmethod
     def add_citations_to_message(
