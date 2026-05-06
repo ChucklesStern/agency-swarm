@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import Any, overload
+from typing import Any, cast, get_origin, overload
 
 from agents import FunctionTool, RunContextWrapper, function_tool as sdk_function_tool
 from agents.tool_context import ToolContext
@@ -40,10 +41,14 @@ def normalize_function_tool(tool: FunctionTool) -> FunctionTool:
     if getattr(tool, _WRAPPED_ATTR, False):
         return tool
 
-    original_on_invoke_tool = tool.on_invoke_tool
+    original_on_invoke_tool = cast(Callable[[Any, str], Awaitable[Any]], tool.on_invoke_tool)
+    expects_run_context_wrapper = _expects_run_context_wrapper(original_on_invoke_tool)
 
     @wraps(original_on_invoke_tool)
     async def on_invoke_tool(ctx: Any, input_json: str) -> Any:
+        if expects_run_context_wrapper and isinstance(ctx, RunContextWrapper):
+            return await original_on_invoke_tool(ctx, input_json)
+
         manual_context = build_manual_tool_context(
             ctx,
             tool_name=tool.name,
@@ -55,6 +60,22 @@ def normalize_function_tool(tool: FunctionTool) -> FunctionTool:
     tool.on_invoke_tool = on_invoke_tool
     setattr(tool, _WRAPPED_ATTR, True)
     return tool
+
+
+def _expects_run_context_wrapper(func: Callable[..., Any]) -> bool:
+    try:
+        first_param = next(iter(inspect.signature(func).parameters.values()))
+    except (StopIteration, TypeError, ValueError):
+        return False
+
+    annotation = first_param.annotation
+    if annotation is inspect.Signature.empty:
+        return False
+    if annotation is RunContextWrapper or get_origin(annotation) is RunContextWrapper:
+        return True
+    if isinstance(annotation, str):
+        return annotation == "RunContextWrapper" or annotation.startswith("RunContextWrapper[")
+    return False
 
 
 @overload
