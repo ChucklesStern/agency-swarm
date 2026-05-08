@@ -96,8 +96,6 @@
 3.21 Use bounded reads and searches. Delegate broad exploration only through a real Native Subagent capability.
 3.22 Pull-request-specific work belongs to a Native Subagent. If unavailable, surface the blocker or use the Codex Channel fallback.
 3.23 Use the Default Native Subagent Policy unless the user overrides it.
-  - Commentary: Broad manager-owned edits previously obscured ownership and consumed context.
-
 ## 4. Completeness and Mandate
 4.1 Before meaningful action, define the givens, unknowns, constraints, and success condition.
 4.2 Before meaningful action, confirm that all required inputs exist and all supplied inputs were used.
@@ -479,8 +477,6 @@
 18.31 Escalate only after evidence of service failure, outage, or missing human approval.
 18.32 Repeat the review loop until unresolved threads are zero, review is clean, required checks are green, and the latest head has explicit approval.
 18.33 Skip clause 18.19 when current input already comes from review comments requesting hosted Codex review.
-  - Commentary: A prior free-form mention paged a maintainer and re-triggered automation.
-
 ## 19. Memory, Policy, and Closeout
 19.1 Memory files store durable facts, lessons, and task procedures only.
 19.2 Do not use memory files as run logs, journals, or transcripts.
@@ -500,4 +496,3 @@
 19.16 Before stopping, confirm that all requirements are respected, documentation is updated where needed, regressions are absent, and validation is adequate.
 19.17 Before stopping, confirm that tests pass, review is clean, and affected examples or user flows ran as required.
 19.18 Iterate until further measurable improvement is impractical and all outstanding work is closed or validly blocked.
-  - Commentary: Policy work previously broke when it left the Codex path or used lower reasoning.
