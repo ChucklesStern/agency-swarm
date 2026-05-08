@@ -129,7 +129,7 @@ class RequirementLedgerCliTest(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             self.assertIn("error: cannot decode original file as UTF-8:", stderr.getvalue())
 
-    def test_legacy_active_items_migrate_to_artifacts_list(self) -> None:
+    def test_legacy_agency_active_schema_migrates_missing_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             ledger_dir = Path(tmpdir) / "ledger"
             ledger_dir.mkdir()
@@ -167,11 +167,11 @@ class RequirementLedgerCliTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(stderr.getvalue(), "")
             self.assertIn("Active (1)", stdout.getvalue())
-            active_data = json.loads((ledger_dir / "active.json").read_text(encoding="utf-8"))
-            self.assertEqual(active_data["schema"], MODULE.SCHEMA_VERSION)
-            self.assertEqual(active_data["items"][0]["artifacts"], [])
+            active = json.loads((ledger_dir / "active.json").read_text(encoding="utf-8"))
+            self.assertEqual(active["schema"], MODULE.SCHEMA_VERSION)
+            self.assertEqual(active["items"][0]["artifacts"], [])
 
-    def test_current_active_items_require_artifacts_list(self) -> None:
+    def test_active_items_require_artifacts_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             ledger_dir = Path(tmpdir) / "ledger"
             ledger_dir.mkdir()

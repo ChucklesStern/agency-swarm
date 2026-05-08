@@ -15,7 +15,7 @@ Use this skill for policy, workflow-rule, and repo-skill changes. Repo skills ar
 4. For delegated-output checks, also follow `.codex/skills/delegation-management`.
 5. When the edit responds to a material process mistake or repeated failure class, fix the largest durable rule or process gap in the right owner section or skill, not just the literal symptom. Use the ledger only for state tracking: active requests, decisions, blockers, evidence, artifacts, and source links.
 6. Preserve the active policy branch or artifact when one exists. Create a new branch or artifact only when the mandate needs one; create a pull request only when the user asks.
-7. Follow the policy, repo-skill, and workflow-rule model floor in Tool And Model Policy: isolated worker or worktree, strongest available GPT-5.5 with `xhigh` reasoning when available, with any substitution stated before relying on it.
+7. Follow the Tool And Model Policy floor for policy, repo-skill, and workflow-rule edits: separate isolated policy worker every time, strongest available GPT-5.5 or approved substitute, `xhigh` reasoning required (`high` is not enough), and no policy edits if that path is unavailable.
 8. If the policy edit is self-initiated, ask the user before changing files.
 9. Stay tightly scoped: use `AGENTS.md`, the current diff, and directly authorized policy inputs. Avoid unrelated repo exploration unless the mandate requires it.
 10. Classify each rule before editing: universal policy, manager-only policy, repo-specific invariant, or skill procedure.
@@ -32,7 +32,7 @@ Use this skill for policy, workflow-rule, and repo-skill changes. Repo skills ar
 
 - Do not commit policy directly to `main` unless the user explicitly asks.
 - Do not mix policy changes into feature pull requests.
-- Create or reuse a policy branch as needed inside the mandate. Push the policy branch and provide a compare link by default; open a pull request only when the user asks.
+- Create or reuse a policy branch as needed inside the mandate. Push or update an existing pull request only when the mandate explicitly covers remote publication or that pull-request update; otherwise keep changes local and surface the needed approval.
 - Preserve already-approved behavior. Wording may change only when the behavior is clearly retained or improved.
 
 ## Validation
@@ -43,6 +43,12 @@ Run these before commit:
 git diff --check
 make format
 make check
+```
+
+For Requirement Ledger script changes, also run:
+
+```bash
+python .codex/skills/requirement-ledger/scripts/test_requirement_ledger.py
 ```
 
 For repo-skill changes, also reread the changed `SKILL.md` files and verify their descriptions trigger only the intended work.

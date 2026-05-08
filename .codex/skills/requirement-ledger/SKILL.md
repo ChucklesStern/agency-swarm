@@ -44,6 +44,8 @@ New active ledger items must carry an `artifacts` list, even when it is empty. U
 
 Legacy archive entries that predate `artifacts` stay readable; the tool treats missing archive artifacts as `[]` on read. Do not hand-edit archive data just to add the field.
 
+Legacy Agency active ledgers using `codex-requirement-ledger/v2` are migrated on read to the current schema and backfilled with `artifacts: []` when needed. Current-schema active entries still require an explicit `artifacts` list.
+
 ## Commands
 
 Add an item:

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = "agentswarm-requirement-ledger/v2"
-LEGACY_SCHEMA_VERSIONS = ("codex-requirement-ledger/v2",)
+LEGACY_ACTIVE_SCHEMA_VERSIONS = ("codex-requirement-ledger/v2",)
 DEFAULT_LEDGER_DIR = Path(".codex/requirements-ledger")
 ACTIVE_FILE = "active.json"
 ARCHIVE_FILE = "archive.jsonl"
@@ -229,7 +229,7 @@ def _load_active(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise LedgerError(f"invalid active ledger JSON: {path}") from exc
     schema = data.get("schema")
-    if schema not in (SCHEMA_VERSION, *LEGACY_SCHEMA_VERSIONS) or not isinstance(data.get("items"), list):
+    if schema not in (SCHEMA_VERSION, *LEGACY_ACTIVE_SCHEMA_VERSIONS) or not isinstance(data.get("items"), list):
         raise LedgerError(f"unsupported active ledger schema: {path}")
     migrated = schema != SCHEMA_VERSION
     if migrated:
