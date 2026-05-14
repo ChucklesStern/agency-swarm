@@ -350,21 +350,13 @@ def _apply_shared_tools(agency: "Agency") -> None:
     logger.info(f"Applied {len(tools_to_add)} shared tools to {len(agency.agents)} agents")
 
 
-def _apply_shared_files(agency: "Agency") -> None:
-    """Process shared_files_folder and attach the vector store to all agents."""
-    if not agency.shared_files_folder:
-        return
+def _apply_files_folder(agency: "Agency", folder_path: Path) -> None:
+    """Ingest files from an already-resolved folder_path into a vector store.
 
-    # Skip side-effectful OpenAI file/vector-store setup when DRY_RUN is enabled
-    if is_dry_run():
-        logger.debug("DRY_RUN enabled; skipping shared files processing")
-        return
-
-    caller_dir = Path(get_external_caller_directory())
-    folder_path = Path(agency.shared_files_folder)
-    if not folder_path.is_absolute():
-        folder_path = caller_dir / folder_path
-
+    ``folder_path`` must be an absolute, resolved ``Path``; path resolution is
+    the caller's responsibility.  This helper contains no OpenAI calls itself
+    when ``is_dry_run()`` is true — callers should guard on that before calling.
+    """
     supported_agents = [agent for agent in agency.agents.values() if agent.supports_framework_tool_wiring]
     if not supported_agents:
         logger.debug("Skipping shared file preprocessing because no agent supports framework tool wiring")
@@ -467,6 +459,88 @@ def _apply_shared_files(agency: "Agency") -> None:
             logger.debug(f"Attached shared files to agent '{agent_name}'")
         except Exception as e:
             logger.error(f"Error attaching shared files to agent '{agent_name}': {e}")
+
+
+def _apply_shared_files(agency: "Agency") -> None:
+    """Process shared_files_folder and attach the vector store to all agents."""
+    if not agency.shared_files_folder:
+        return
+
+    # Skip side-effectful OpenAI file/vector-store setup when DRY_RUN is enabled
+    if is_dry_run():
+        logger.debug("DRY_RUN enabled; skipping shared files processing")
+        return
+
+    caller_dir = Path(get_external_caller_directory())
+    folder_path = Path(agency.shared_files_folder)
+    if not folder_path.is_absolute():
+        folder_path = caller_dir / folder_path
+
+    _apply_files_folder(agency, folder_path)
+
+
+def apply_project_folder(agency: "Agency") -> None:
+    """Wire project_folder into the agency: vector store ingestion and optional shell access.
+
+    Vector store ingestion
+    ----------------------
+    When ``project_folder`` is set the folder's current contents are uploaded to an
+    OpenAI vector store and attached to all agents as searchable context.  This
+    ingestion happens once, at ``Agency`` initialisation time.  Files created or
+    modified later are on disk immediately and readable via shell in future sessions,
+    but they are **not** searchable until the agency is re-created (which triggers a
+    fresh ingestion).
+
+    Shell access
+    ------------
+    Shell access (``PersistentShellTool``) is an explicit opt-in controlled by
+    ``enable_project_shell=True``.  Without that flag, agents have no shell capability
+    even when ``project_folder`` is set.
+    """
+    if agency.project_folder is None:
+        return
+
+    folder_path = agency.project_folder  # already resolved absolute Path
+    folder_str = str(folder_path)
+
+    # --- Vector store ingestion (always when project_folder is set) ---
+    if is_dry_run():
+        logger.debug("DRY_RUN enabled; skipping project_folder files processing")
+    else:
+        _apply_files_folder(agency, folder_path)
+
+    # --- Shell access (explicit opt-in only) ---
+    if not agency.enable_project_shell:
+        return
+
+    # 1. Seed shell_cwds in user_context BEFORE wiring the tool so the initial
+    #    CWD is visible to PersistentShellTool from the very first invocation.
+    existing_cwds = agency.user_context.get("shell_cwds")
+    if existing_cwds is None:
+        agency.user_context["shell_cwds"] = {name: folder_str for name in agency.agents}
+    elif isinstance(existing_cwds, dict):
+        for name in agency.agents:
+            existing_cwds.setdefault(name, folder_str)  # user-supplied keys win
+    else:
+        logger.warning(
+            "user_context['shell_cwds'] is not a dict; "
+            "skipping automatic shell CWD seeding for project_folder"
+        )
+
+    # 2. Add PersistentShellTool to shared_tools if not already present.
+    from agency_swarm.tools.built_in import PersistentShellTool
+
+    already_present = any(
+        (inspect.isclass(t) and issubclass(t, PersistentShellTool)) or isinstance(t, PersistentShellTool)
+        for t in (agency.shared_tools or [])
+    )
+    if not already_present:
+        if agency.shared_tools is None:
+            agency.shared_tools = []
+        agency.shared_tools.append(PersistentShellTool)
+
+    # 3. Wire the tool to all agents (shared_tools list was updated above).
+    _apply_shared_tools(agency)
 
 
 def _apply_shared_mcp_servers(agency: "Agency") -> None:

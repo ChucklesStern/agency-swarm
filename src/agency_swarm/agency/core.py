@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agents import RunConfig, RunHooks, RunResult, Tool, TResponseInputItem
@@ -21,6 +22,7 @@ from agency_swarm.utils.thread import ThreadLoadCallback, ThreadManager, ThreadS
 
 from .helpers import read_instructions, run_fastapi as run_fastapi_helper
 from .setup import (
+    apply_project_folder,
     apply_shared_resources,
     configure_agents,
     initialize_agent_runtime_state,
@@ -71,6 +73,8 @@ class Agency:
     shared_mcp_servers: list[Any] | None  # MCP servers shared across all agents
     user_context: dict[str, Any]  # Shared user context for MasterContext
     send_message_tool_class: type | None  # Fallback SendMessage tool class when flows have no override
+    project_folder: "Path | None"  # Resolved absolute path to the persistent project workspace
+    enable_project_shell: bool  # Whether PersistentShellTool is auto-wired to all agents
 
     _agent_runtime_state: dict[str, "AgentRuntimeState"]
 
@@ -91,6 +95,8 @@ class Agency:
         load_threads_callback: ThreadLoadCallback | None = None,
         save_threads_callback: ThreadSaveCallback | None = None,
         user_context: dict[str, Any] | None = None,
+        project_folder: str | Path | None = None,
+        enable_project_shell: bool = False,
     ):
         """
         Initializes the Agency object.
@@ -124,9 +130,22 @@ class Agency:
             load_threads_callback (ThreadLoadCallback | None, optional): Callable to load conversation threads.
             save_threads_callback (ThreadSaveCallback | None, optional): Callable to save conversation threads.
             user_context (dict[str, Any] | None, optional): Initial shared context accessible to all agents.
+            project_folder (str | Path | None, optional): Path to a persistent workspace directory shared across
+                all sessions. The directory is created automatically if it does not exist. On initialisation its
+                current contents are uploaded to an OpenAI vector store and attached to all agents as searchable
+                context. Files written later are on disk immediately and readable via shell in the next session,
+                but they are not searchable until the agency is re-created (which triggers a fresh ingestion).
+                Relative paths are resolved from the caller's file location (same convention as
+                ``shared_files_folder``).
+            enable_project_shell (bool, optional): When ``True`` and ``project_folder`` is set, adds
+                ``PersistentShellTool`` to all agents and pre-seeds each agent's shell working directory to
+                ``project_folder``. Shell access is a significant capability grant — agents can execute commands,
+                create and delete files, and read local secrets. Defaults to ``False``. Raises ``ValueError`` if
+                set to ``True`` without ``project_folder``.
 
         Raises:
-            ValueError: If the agency structure is not defined, or if agent names are duplicated.
+            ValueError: If the agency structure is not defined, agent names are duplicated, or
+                ``enable_project_shell=True`` is passed without ``project_folder``.
             TypeError: If entries in the structure are not `Agent` instances or valid tuples/lists.
         """
         logger.info("Initializing Agency...")
@@ -160,6 +179,18 @@ class Agency:
         else:
             self.shared_instructions = ""
         self.user_context = user_context or {}
+        self.enable_project_shell = enable_project_shell
+        if enable_project_shell and project_folder is None:
+            raise ValueError("enable_project_shell=True requires project_folder to be set")
+        if project_folder is not None:
+            caller_dir = Path(get_external_caller_directory())
+            resolved = Path(project_folder)
+            if not resolved.is_absolute():
+                resolved = caller_dir / resolved
+            resolved.mkdir(parents=True, exist_ok=True)
+            self.project_folder = resolved
+        else:
+            self.project_folder = None
         self.send_message_tool_class = send_message_tool_class
         self.shared_tools = shared_tools
         self.shared_tools_folder = shared_tools_folder
@@ -190,6 +221,7 @@ class Agency:
         self._communication_tool_classes = _communication_tool_classes
         configure_agents(self, _derived_communication_flows)
         apply_shared_resources(self)
+        apply_project_folder(self)
         for agent_name, agent_instance in self.agents.items():
             runtime_state = self._agent_runtime_state.get(agent_name)
             agent_instance.refresh_conversation_starters_cache(

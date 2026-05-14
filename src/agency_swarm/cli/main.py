@@ -7,6 +7,7 @@ from agency_swarm.utils.create_agent_template import create_agent_template
 
 from .import_tool import import_tool_command
 from .migrate_agent import migrate_agent_command
+from .run_tui import run_tui
 
 
 def main() -> None:
@@ -58,6 +59,29 @@ def main() -> None:
         help="Output directory for the generated agent (default: current directory)",
     )
 
+    # tui command
+    tui_parser = subparsers.add_parser(
+        "tui",
+        help="Launch the TUI for an agency",
+        description=(
+            "Import FILE (default: ./agency.py, then ./run.py) and launch the TUI.\n\n"
+            "The file is imported and executed. An Agency instance is discovered "
+            "using the following priority order:\n"
+            "  1. create_agency() — if defined and callable, its return value is used\n"
+            "  2. agency          — a global named 'agency' is used\n"
+            "  3. Scan            — exactly one Agency instance in globals is used\n\n"
+            "Note: importing the file runs its top-level code."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    tui_parser.add_argument(
+        "file",
+        nargs="?",
+        default=None,
+        metavar="FILE",
+        help="Path to the agency entrypoint (default: ./agency.py, then ./run.py)",
+    )
+
     # Import tool command
     import_tool_parser = subparsers.add_parser(
         "import-tool",
@@ -83,7 +107,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "migrate-agent":
+    if args.command == "tui":
+        run_tui(args.file)
+    elif args.command == "migrate-agent":
         exit_code = migrate_agent_command(args.settings_file, args.output_dir)
         sys.exit(exit_code)
     elif args.command == "import-tool":

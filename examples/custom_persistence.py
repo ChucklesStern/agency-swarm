@@ -1,19 +1,33 @@
 """
 Agency Persistence Example
+==========================
 
-This example demonstrates how to persist thread data between
-different sessions using callback functions.
+Demonstrates how to persist conversation history across sessions using
+``FileSystemPersistence``.  After the first run, re-run this script and the
+agent will recall information from the previous session.
+
+Persistence directory
+---------------------
+Conversations are stored as JSON files under ``.agency_swarm/threads/`` in the
+current working directory.  You can inspect or delete them at any time:
+
+    ls .agency_swarm/threads/
+    rm -rf .agency_swarm/threads/
+
+Note on AGENCY_SWARM_CHATS_DIR
+-------------------------------
+``AGENCY_SWARM_CHATS_DIR`` is a **separate** environment variable that
+controls the internal cache directory used for conversation-starter caching and
+other framework internals.  It does **not** configure ``FileSystemPersistence``.
+Set it if you want to move the internal cache; use ``FileSystemPersistence`` to
+control where your conversation threads are stored.
 """
 
 import asyncio
-import json
 import logging
 import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
-from typing import Any
 
 from agency_swarm import ModelSettings
 
@@ -24,145 +38,86 @@ project_root = script_dir.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root / "src"))
 
-from agency_swarm import Agency, Agent  # noqa: E402
+from agency_swarm import Agency, Agent, FileSystemPersistence  # noqa: E402
 
-PERSISTENCE_DIR = Path(tempfile.mkdtemp(prefix="thread_persistence_"))
+# Store threads in a local, inspectable directory next to the working directory.
+# Each chat session gets its own JSON file: .agency_swarm/threads/{chat_id}.json
+PERSISTENCE_DIR = Path(".agency_swarm/threads")
+persistence = FileSystemPersistence(PERSISTENCE_DIR)
 
+# In production, derive chat_id from your session/user management system.
+chat_id = "demo_session"
 
-def save_threads(messages: list[dict[str, Any]]):
-    """
-    Save all messages to a file.
-
-    Args:
-        messages: Flat list of all messages with agent/callerAgent metadata.
-                 Each message contains:
-                 - agent: The recipient agent name
-                 - callerAgent: The sender agent name (None for user)
-                 - timestamp: Message timestamp in milliseconds
-                 - Plus all standard OpenAI message fields
-
-    Messages from all conversations are stored in a single flat list.
-
-    Note: In production, you would typically use a closure to capture chat_id
-    or use a database with user/session context for saving messages.
-    """
-    file_path = PERSISTENCE_DIR / "thread_data.json"
-    with open(file_path, "w") as f:
-        json.dump(messages, f, indent=2)
-
-
-def load_threads(chat_id: str) -> list[dict[str, Any]]:
-    """
-    Load all messages from file for a specific chat session.
-
-    Args:
-        chat_id: The chat session identifier to load messages for.
-
-    Returns:
-        Flat list of all messages with agent/callerAgent metadata.
-        Returns empty list if no data exists.
-
-    Note: This demonstrates the correct callback signature where the load_threads
-    function accepts a chat_id parameter, which is passed via lambda closure.
-    """
-    # In this demo, we use a simple file for simplicity, but in production
-    # you would typically use the chat_id to load session-specific data from a database
-    file_path = PERSISTENCE_DIR / "thread_data.json"
-
-    print(f"Loading messages for chat_id: {chat_id}")
-
-    if not file_path.exists():
-        print("No existing message data file found - starting with empty messages")
-        return []
-
-    with open(file_path) as f:
-        messages: list[dict[str, Any]] = json.load(f)
-
-    return messages
-
-
-# Initialize all agents and agencies at the top
+# Initialize agent
 assistant_agent = Agent(
     name="AssistantAgent",
     instructions="You are a helpful assistant. Answer questions and help users with their tasks.",
     tools=[],
-    model_settings=ModelSettings(temperature=0.0),  # Deterministic responses
+    model_settings=ModelSettings(temperature=0.0),
 )
 
-# Define chat_id for demonstration - in production, this would come from your session management
-chat_id = "demo_session"
-
-# --- Create Agency Instance (v1.x Pattern) ---
+# Wire persistence into Agency using the callbacks helper.
+# load_threads_callback and save_threads_callback are injected as keyword arguments.
 agency = Agency(
-    assistant_agent,  # AssistantAgent is the entry point (positional argument)
+    assistant_agent,
     shared_instructions="Be helpful and concise in your responses.",
-    load_threads_callback=lambda: load_threads(chat_id),
-    save_threads_callback=lambda messages: save_threads(messages),
+    **persistence.callbacks(chat_id),
 )
-
-# Don't create the second agency here - we'll create it after the first run
 
 TEST_INFO = "blue and lucky number is 77"
 
 
-async def run_persistent_conversation():
+async def run_persistent_conversation() -> None:
     """
-    Demonstrates thread isolation and persistence in Agency Swarm v1.x.
+    Demonstrates thread persistence in Agency Swarm v1.x.
 
-    Key concepts demonstrated:
-    1. Thread isolation: Each communication flow gets its own thread
-    2. Thread identifiers: Follow "sender->recipient" format
-    3. Persistence: Complete thread state is saved and restored
-    4. Correct callback signatures: load() -> all_threads, save(all_threads) -> None
+    First run:  the agent learns and saves your favorite color and lucky number.
+    Second run: a fresh agency instance loads the saved history and recalls them.
     """
 
-    user_message_1 = f"Hello. Please remember that my favorite color is {TEST_INFO}. I'll ask you about it later."
-    print(f"\n--- Turn 1:  --- \nSending message to assistant: {user_message_1}")
+    user_message_1 = (
+        f"Hello. Please remember that my favorite color is {TEST_INFO}. I'll ask you about it later."
+    )
+    print(f"\n--- Turn 1 ---\nSending: {user_message_1}")
     response1 = await agency.get_response(message=user_message_1)
-    print(f"Response from AssistantAgent: {response1.final_output}")
+    print(f"Response: {response1.final_output}")
+    print(f"\nConversation saved to: {PERSISTENCE_DIR / (chat_id + '.json')}")
 
     await asyncio.sleep(1)
 
-    # Simulate application restart by creating a new agency
+    # Simulate an application restart by creating a new Agency instance.
+    # The new instance loads the saved history via load_threads_callback.
     print("\n--- Simulating Application Restart ---")
-    print("Creating new agency instance that will share the same thread...")
 
-    # Create a second agent instance for the reloaded agency (to avoid agent reuse)
     assistant_agent_reloaded = Agent(
         name="AssistantAgent",
         instructions="You are a helpful assistant. Answer questions and help users with their tasks.",
         tools=[],
-        model_settings=ModelSettings(temperature=0.0),  # Deterministic responses
+        model_settings=ModelSettings(temperature=0.0),
     )
 
+    persistence_reloaded = FileSystemPersistence(PERSISTENCE_DIR)
     agency_reloaded = Agency(
-        assistant_agent_reloaded,  # Use NEW agent instance to prevent reuse error
+        assistant_agent_reloaded,
         shared_instructions="Be helpful and concise in your responses.",
-        load_threads_callback=lambda: load_threads(chat_id),
-        save_threads_callback=lambda messages: save_threads(messages),
+        **persistence_reloaded.callbacks(chat_id),
     )
 
     user_message_2 = "What was my favorite color and lucky number I told you earlier?"
-    print(f"\n--- Turn 2:  --- \nSending message to assistant: {user_message_2}")
+    print(f"\n--- Turn 2 ---\nSending: {user_message_2}")
     response2 = await agency_reloaded.get_response(message=user_message_2)
-    print(f"Response from Reloaded AssistantAgent: {response2.final_output}")
+    print(f"Response: {response2.final_output}")
 
-    # Test result
     if response2.final_output and "blue" in response2.final_output.lower() and "77" in response2.final_output.lower():
-        print(f"\n✅ SUCCESS: AssistantAgent remembered the information ('{TEST_INFO}')!")
-        print("Demo completed successfully.")
+        print(f"\n✅ SUCCESS: Agent recalled '{TEST_INFO}' across the simulated restart.")
     else:
-        print(f"\n❌ FAILURE: AssistantAgent did NOT remember the information ('{TEST_INFO}').")
-        print(f"Agent's response: {response2.final_output}")
-
-    # Cleanup
-    if PERSISTENCE_DIR.exists():
-        shutil.rmtree(PERSISTENCE_DIR)
-        print(f"\nTemporary persistence directory {PERSISTENCE_DIR} cleaned up.")
+        print(f"\n❌ FAILURE: Agent did not recall '{TEST_INFO}'.")
+        print(f"   Response was: {response2.final_output}")
 
 
 if __name__ == "__main__":
-    print("\n=== Agency Swarm v1.x Thread Isolation & Persistence Demo ===")
+    print("\n=== Agency Swarm v1.x File-Based Persistence Demo ===")
+    print(f"Persistence directory: {PERSISTENCE_DIR.resolve()}")
 
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

@@ -70,6 +70,7 @@ from .tools import (  # noqa: E402
     tool_output_image_from_file_id,
     tool_output_image_from_path,
 )
+from .utils.persistence import FileSystemPersistence  # noqa: E402
 from .utils.thread import ThreadManager  # noqa: E402
 
 __all__ = [
@@ -79,6 +80,7 @@ __all__ = [
     "StreamingRunResponse",
     "BaseTool",
     "MasterContext",
+    "FileSystemPersistence",
     "ThreadManager",
     "PersistenceHooks",
     "SendMessage",
