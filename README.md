@@ -30,7 +30,7 @@ This framework continues the original vision of Arsenii Shatokhin (aka VRSEN) to
 ## Installation
 
 ```bash
-pip install -U agency-swarm
+pip install -U agency-swarm-custom
 ```
 
 > **v1.x note:** The framework targets the OpenAI Agents SDK + Responses API.
@@ -47,140 +47,123 @@ If you hit environment issues, see the [Installation guide](https://agency-swarm
 
 ## Getting Started
 
-> **Recommended**: Start with the [Agency Starter Template](https://github.com/agency-ai-solutions/agency-starter-template) before you customize anything.
+Agency Swarm is a framework — you write an `agency.py` that defines your agents, then launch it with the CLI. Here is the complete first-boot flow.
 
-1. **Set Your OpenAI Key**:
-    - Create a `.env` file with `OPENAI_API_KEY=your_key` (auto-loaded), or export it in your shell:
-    ```bash
-    export OPENAI_API_KEY="YOUR_API_KEY"
-    ```
+### Step 1 — Set your OpenAI key
 
-2. **Create Tools**:
-Define tools using the modern `@function_tool` decorator (recommended), or extend `BaseTool` (compatible):
-    ```python
-    from agency_swarm import function_tool
+Create a `.env` file in your project directory (auto-loaded on startup):
 
-    @function_tool
-    def my_custom_tool(example_field: str) -> str:
-        """A brief description of what the custom tool does."""
-        return f"Result: {example_field}"
-    ```
+```
+OPENAI_API_KEY=your_key_here
+```
 
-    or with `BaseTool`:
+Or export it in your shell:
 
-    ```python
-    from agency_swarm.tools import BaseTool
-    from pydantic import Field
+```bash
+export OPENAI_API_KEY="your_key_here"
+```
 
-    class MyCustomTool(BaseTool):
-        """
-        A brief description of what the custom tool does.
-        The docstring should clearly explain the tool's purpose and functionality.
-        It will be used by the agent to determine when to use this tool.
-        """
+### Step 2 — Create your project
 
-        # Define the fields with descriptions using Pydantic Field
-        example_field: str = Field(
-            ..., description="Description of the example field, explaining its purpose and usage for the Agent."
-        )
+```bash
+mkdir my-agency && cd my-agency
+```
 
-        def run(self):
-            """
-            The implementation of the run method, where the tool's main functionality is executed.
-            """
-            # Your custom tool logic goes here
-            # do_something(self.example_field)
+Create `agency.py`:
 
-            # Return the result of the tool's operation
-            return "Result of MyCustomTool operation"
-    ```
+```python
+from agency_swarm import Agency, Agent
 
-    or convert from OpenAPI schemas:
+assistant = Agent(
+    name="Assistant",
+    instructions="You are a helpful assistant.",
+    model="gpt-4o",
+)
 
-    ```python
-    from agency_swarm.tools import ToolFactory
-    # using local file
-    with open("schemas/your_schema.json") as f:
-        tools = ToolFactory.from_openapi_schema(
-            f.read(),
-        )
+agency = Agency([assistant])
+```
 
-    # using requests
-    import requests
-    tools = ToolFactory.from_openapi_schema(
-        requests.get("https://api.example.com/openapi.json").json(),
-    )
-    ```
+### Step 3 — Launch the TUI
 
+```bash
+agency-swarm tui
+```
 
-3. **Define Agent Roles**: Start by defining the roles of your agents. For example, a CEO agent for managing tasks and a developer agent for executing tasks.
+The CLI discovers the `agency` variable in `agency.py` and launches the terminal UI automatically. On first run it sets up the terminal app, then reuses it on later runs.
 
-    ```python
-    from agency_swarm import Agent, ModelSettings
+You can also point it at any file explicitly:
 
-    ceo = Agent(
-        name="CEO",
-        description="Responsible for client communication, task planning and management.",
-        instructions="You must converse with other agents to ensure complete task execution.", # can be a file like ./instructions.md
-        files_folder="./files", # files to be uploaded to OpenAI
-        schemas_folder="./schemas", # OpenAPI schemas to be converted into tools
-        tools=[my_custom_tool],  # FunctionTool returned by @function_tool (or adapt BaseTool via ToolFactory)
-        model="gpt-5.4-mini",
-        model_settings=ModelSettings(
-            max_tokens=25000,
-        ),
-    )
-    ```
+```bash
+agency-swarm tui path/to/my_agency.py
+```
 
-    Working from examples:
+Or use a factory function instead of a global variable:
 
-    - Browse `./examples` for runnable demos and patterns you can adapt.
-    - Use the `.cursorrules` file at the repo root with your AI coding agent (Cursor, Claude Code, etc.).
-    - Follow the Cursor IDE guide: https://agency-swarm.ai/welcome/getting-started/cursor-ide
+```python
+def create_agency() -> Agency:
+    return Agency([assistant])
+```
 
+---
 
-4. **Define Agency Communication Flows**:
-Establish how your agents will communicate with each other.
+### Building a real agency
 
-    ```python
-    from agency_swarm import Agency
-    # if importing from local files
-    from Developer import Developer
-    from VirtualAssistant import VirtualAssistant
+**Define agent roles:**
 
-    dev = Developer()
-    va = VirtualAssistant()
+```python
+from agency_swarm import Agent, ModelSettings
 
-    agency = Agency(
-        ceo,  # CEO will be the entry point for communication with the user
-        communication_flows=[
-            ceo > dev,  # CEO can initiate communication with Developer
-            ceo > va,   # CEO can initiate communication with Virtual Assistant
-            dev > va    # Developer can initiate communication with Virtual Assistant
-        ],
-        shared_instructions='agency_manifesto.md', # shared instructions for all agents
-    )
-    ```
+ceo = Agent(
+    name="CEO",
+    description="Responsible for client communication, task planning and management.",
+    instructions="You must converse with other agents to ensure complete task execution.",
+    files_folder="./files",
+    schemas_folder="./schemas",
+    tools=[my_custom_tool],
+    model="gpt-5.4-mini",
+    model_settings=ModelSettings(max_tokens=25000),
+)
+```
 
-     In Agency Swarm, communication flows are directional. The `>` operator defines allowed initiations (left can initiate a chat with right).
+**Define communication flows:**
 
-5. **Run a Demo**
+```python
+from agency_swarm import Agency
+from Developer import Developer
+from VirtualAssistant import VirtualAssistant
 
-Web UI:
+dev = Developer()
+va = VirtualAssistant()
+
+agency = Agency(
+    ceo,
+    communication_flows=[
+        ceo > dev,
+        ceo > va,
+        dev > va,
+    ],
+    shared_instructions="agency_manifesto.md",
+)
+```
+
+Communication flows are directional — `>` means the left agent can initiate a conversation with the right agent.
+
+**Scaffold an agent folder:**
+
+```bash
+agency-swarm create-agent-template MyAgent
+```
+
+This creates a `MyAgent/` directory with `instructions.md`, a `tools/` folder, and a ready-to-import agent class.
+
+**Run as web UI:**
+
 ```python
 agency.copilot_demo()
 ```
 
-Terminal:
-```python
-agency.tui()
-```
+**Run programmatically (async):**
 
-On first run, Agency Swarm sets up the terminal app automatically, shows a short setup message, and reuses it on later runs.
-
-See the terminal workflow guide: https://agency-swarm.ai/core-framework/agencies/agent-swarm-cli
-
-Programmatic (async):
 ```python
 import asyncio
 
@@ -191,7 +174,68 @@ async def main():
 asyncio.run(main())
 ```
 
-Need sync? `agency.get_response_sync(...)` exists, but async is recommended.
+`agency.get_response_sync(...)` exists for sync contexts, but async is recommended.
+
+**Create tools:**
+
+```python
+from agency_swarm import function_tool
+
+@function_tool
+def my_custom_tool(example_field: str) -> str:
+    """A brief description of what the custom tool does."""
+    return f"Result: {example_field}"
+```
+
+Or extend `BaseTool`:
+
+```python
+from agency_swarm.tools import BaseTool
+from pydantic import Field
+
+class MyCustomTool(BaseTool):
+    """Tool description used by the agent to decide when to call it."""
+    example_field: str = Field(..., description="What this field is for.")
+
+    def run(self) -> str:
+        return f"Result: {self.example_field}"
+```
+
+---
+
+### Persistent sessions
+
+Use `FileSystemPersistence` to save and restore conversation history across runs:
+
+```python
+from agency_swarm import Agency, Agent
+from agency_swarm.utils.persistence import FileSystemPersistence
+
+persistence = FileSystemPersistence(".agency_swarm/threads")
+
+agency = Agency(
+    [agent],
+    **persistence.callbacks("my-session"),
+)
+```
+
+Each `chat_id` gets its own JSON file. The same session ID picks up where it left off on the next run.
+
+---
+
+### Project folder (shared workspace)
+
+Give every agent in the agency access to a shared on-disk workspace:
+
+```python
+agency = Agency(
+    [agent],
+    project_folder="./workspace",       # created automatically
+    enable_project_shell=True,          # opt-in shell access for agents
+)
+```
+
+Files in `project_folder` are ingested into a vector store so agents can search them. With `enable_project_shell=True`, agents also get a persistent shell whose working directory starts at the project folder.
 
 ### Folder Structure
 
