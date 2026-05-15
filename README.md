@@ -67,29 +67,26 @@ pip install -e .
 
 ## Getting Started
 
-Agency Swarm is a framework — you write an `agency.py` that defines your agents, then launch it with the CLI. Here is the complete first-boot flow.
-
-### Step 1 — Set your OpenAI key
-
-Create a `.env` file in your project directory (auto-loaded on startup):
-
-```
-OPENAI_API_KEY=your_key_here
-```
-
-Or export it in your shell:
+After [installing](#installation), open the directory where you want your agency project to live, then run:
 
 ```bash
-export OPENAI_API_KEY="your_key_here"
+agency-swarm
 ```
 
-### Step 2 — Create your project
+If that directory contains neither `agency.py` nor `run.py`, a starter `agency.py` is created in place and the TUI launches against it. You'll see two confirmation lines first:
 
-```bash
-mkdir my-agency && cd my-agency
+```
+No agency.py or run.py found. Creating ./agency.py quick-start template...
+Created agency.py — edit it any time to customize your agency.
 ```
 
-Create `agency.py`:
+If `agency.py` (or `run.py`) already exists, nothing is written — the launcher opens the existing entrypoint in the TUI.
+
+The TUI will guide you through any required setup, including API key configuration where supported. Once you're in, send a message and start iterating. Edit `agency.py` to customize agents, models, and communication flows.
+
+### What gets created
+
+The starter `agency.py` is intentionally minimal:
 
 ```python
 from agency_swarm import Agency, Agent
@@ -97,31 +94,20 @@ from agency_swarm import Agency, Agent
 assistant = Agent(
     name="Assistant",
     instructions="You are a helpful assistant.",
-    model="gpt-4o",
 )
 
 agency = Agency(assistant)
 ```
 
-### Step 3 — Launch the TUI
+It defines one `Assistant` agent and wraps it in an `Agency` instance. From here, see [Building a real agency](#building-a-real-agency).
+
+### Other ways to launch
+
+Use the explicit `tui` subcommand when you want to fail loudly if no entrypoint exists, or to point at a file by path:
 
 ```bash
-agency-swarm tui
-```
-
-The CLI discovers the `agency` variable in `agency.py` and launches the terminal UI automatically. On first run it sets up the terminal app, then reuses it on later runs.
-
-You can also point it at any file explicitly:
-
-```bash
-agency-swarm tui path/to/my_agency.py
-```
-
-Or use a factory function instead of a global variable:
-
-```python
-def create_agency() -> Agency:
-    return Agency(assistant)
+agency-swarm tui                          # uses ./agency.py or ./run.py; errors if neither exists
+agency-swarm tui path/to/my_agency.py     # explicit path
 ```
 
 ---
