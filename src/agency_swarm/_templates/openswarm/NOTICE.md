@@ -71,3 +71,12 @@ NEW_SHA=$(git -C /tmp/openswarm-vendor-src rev-parse HEAD)
 Local edits to vendored files are deliberately not allowed — any change
 here is drift from upstream. If a fix is required, apply it upstream
 first, then re-sync.
+
+## Locally-authored files in this directory
+
+The following files in this directory are NOT from upstream OpenSwarm —
+they are authored locally for agency-swarm's scaffold mechanism:
+
+- `NOTICE.md` (this file, developer-facing vendor manifest)
+- `OPENSWARM_NOTICE.md` (short user-facing attribution; copied into the
+  user's scaffolded project at scaffold time)
