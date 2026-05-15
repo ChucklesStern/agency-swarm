@@ -1,28 +1,34 @@
-"""Edit images with Gemini or OpenAI image models."""
-
-from typing import Literal
+"""Edit images with Gemini, OpenAI, or FAL.AI image-to-image models."""
 
 import os
-from dotenv import load_dotenv
-from openai import OpenAI
-from pydantic import Field, field_validator, model_validator
+from typing import Literal
 
-from agency_swarm import BaseTool
+from dotenv import load_dotenv
+from pydantic import Field, field_validator, model_validator
+from shared_tools.fal_adapter import (
+    cost_tier_hint,
+    get_fal_i2i_spec,
+    invoke_fal_image_edit_sync,
+    is_fal_i2i_model,
+    validate_fal_aspect_ratio,
+)
 from shared_tools.model_availability import image_model_availability_message
 from shared_tools.openai_client_utils import get_openai_client
 
+from agency_swarm import BaseTool, ToolOutputText
+
 from .utils.image_io import (
-    get_images_dir,
-    build_variant_output_name,
-    resolve_image_reference,
-    save_image,
-    image_to_base64_jpeg,
     build_multimodal_outputs,
+    build_variant_output_name,
     extract_gemini_image_and_usage,
     extract_openai_images_and_usage,
-    run_parallel_variants_sync,
-    validate_aspect_ratio_for_model,
+    get_images_dir,
     get_openai_size_for_aspect_ratio,
+    image_to_base64_jpeg,
+    resolve_image_reference,
+    run_parallel_variants_sync,
+    save_image,
+    validate_aspect_ratio_for_model,
 )
 
 
@@ -47,7 +53,12 @@ class EditImages(BaseTool):
             "If a path is provided, the image is saved at that path."
         ),
     )
-    model: Literal["gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gpt-image-1.5"] = Field(
+    model: Literal[
+        "gemini-2.5-flash-image",
+        "gemini-3-pro-image-preview",
+        "gpt-image-1.5",
+        "fal:flux-pro-kontext",
+    ] = Field(
         default="gemini-2.5-flash-image",
         description="Image model to use.",
     )
@@ -73,12 +84,37 @@ class EditImages(BaseTool):
 
     @model_validator(mode="after")
     def _validate_model_aspect_ratio(self) -> "EditImages":
-        validate_aspect_ratio_for_model(self.model, self.aspect_ratio)
+        if is_fal_i2i_model(self.model):
+            validate_fal_aspect_ratio(get_fal_i2i_spec(self.model), self.aspect_ratio)
+        else:
+            validate_aspect_ratio_for_model(self.model, self.aspect_ratio)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_fal_premium_variants(self) -> "EditImages":
+        if is_fal_i2i_model(self.model):
+            spec = get_fal_i2i_spec(self.model)
+            if spec.cost_tier == "premium" and self.num_variants > 1:
+                raise ValueError(
+                    f"Model '{self.model}' is premium-tier; only num_variants=1 is allowed. "
+                    f"Pick a budget/standard model or run multiple separate calls."
+                )
         return self
 
     def run(self) -> list:
         load_dotenv(override=True)
         images_dir = get_images_dir(self.product_name)
+
+        if is_fal_i2i_model(self.model):
+            results, hint = self._run_fal_edit(images_dir)
+            outputs = build_multimodal_outputs(results, "Image editing complete")
+            outputs.append(ToolOutputText(type="text", text=hint))
+            return outputs
+
+        # Direct-provider paths (Gemini, OpenAI) load the image into a PIL.Image
+        # because they pass the bytes in-band. The FAL branch above takes its
+        # own ref-resolution path via the adapter and uploads to FAL storage,
+        # so we only call resolve_image_reference for the non-FAL flow.
         input_image, source = resolve_image_reference(self.product_name, self.input_image_ref)
 
         if self.model.startswith("gemini-"):
@@ -87,6 +123,33 @@ class EditImages(BaseTool):
 
         results, usage_metadata = self._run_openai(images_dir, input_image)
         return build_multimodal_outputs(results, "Image editing complete")
+
+    def _run_fal_edit(self, images_dir):
+        spec = get_fal_i2i_spec(self.model)
+        pil_images = invoke_fal_image_edit_sync(
+            spec,
+            prompt=self.edit_prompt,
+            input_image_ref=self.input_image_ref,
+            product_name=self.product_name,
+            aspect_ratio=self.aspect_ratio,
+            num_variants=self.num_variants,
+        )
+        if not pil_images:
+            raise RuntimeError(f"FAL endpoint '{spec.endpoint}' returned no edited images.")
+
+        results: list[dict] = []
+        for idx, image in enumerate(pil_images, start=1):
+            variant_name = build_variant_output_name(self.output_file_name, idx, len(pil_images))
+            image_name, file_path = save_image(image, variant_name, images_dir)
+            results.append(
+                {
+                    "image_name": image_name,
+                    "file_path": file_path,
+                    "preview_b64": image_to_base64_jpeg(image),
+                }
+            )
+
+        return results, cost_tier_hint(spec)
 
     def _run_gemini(self, images_dir, input_image):
         from google import genai
@@ -198,9 +261,7 @@ if __name__ == "__main__":
     tool = EditImages(
         product_name="Test_Product",
         input_image_ref="hero_image_example_oai_hero",
-        edit_prompt=(
-            "Replace the background with a black wall, slightly illuminated with a white neon light"
-        ),
+        edit_prompt=("Replace the background with a black wall, slightly illuminated with a white neon light"),
         output_file_name="edited_image_example",
         model="gpt-image-1.5",
         aspect_ratio="1:1",
@@ -211,4 +272,3 @@ if __name__ == "__main__":
         print(result)
     except Exception as exc:
         print(f"Image editing failed: {exc}")
-

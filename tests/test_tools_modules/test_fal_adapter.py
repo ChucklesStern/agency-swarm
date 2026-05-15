@@ -16,15 +16,22 @@ from PIL import Image
 pytest.importorskip("fal_client")
 
 from shared_tools.fal_adapter import (  # noqa: E402
+    FAL_I2I_CATALOG,
     FAL_T2I_CATALOG,
+    FalI2ISpec,
     FalT2ISpec,
     _build_aspect_ratio_family_request,
+    _build_flux_kontext_request,
     _build_image_size_family_request,
     _parse_images_response,
     cost_tier_hint,
+    get_fal_i2i_spec,
     get_fal_t2i_spec,
+    invoke_fal_image_edit_sync,
     invoke_fal_image_sync,
+    is_fal_i2i_model,
     is_fal_model,
+    is_fal_t2i_model,
     validate_fal_aspect_ratio,
 )
 
@@ -100,18 +107,44 @@ def test_catalog_contains_expected_pr1_models():
     }
 
 
-def test_is_fal_model_only_recognizes_catalog_keys():
+def test_is_fal_model_is_umbrella_across_t2i_and_i2i():
+    """`is_fal_model` returns True for any curated FAL model (T2I or I2I)."""
+    # PR 1 T2I catalog
     assert is_fal_model("fal:flux-schnell") is True
     assert is_fal_model("fal:flux-1.1-pro-ultra") is True
+    # PR 2 I2I catalog
+    assert is_fal_model("fal:flux-pro-kontext") is True
+    # Direct-provider models stay out
     assert is_fal_model("gemini-2.5-flash-image") is False
     assert is_fal_model("gpt-image-1.5") is False
-    # Reserved for PR 2 — not in PR 1's catalog and must NOT be recognized.
-    assert is_fal_model("fal:flux-pro-kontext") is False
-    # Reserved for PR 3 — same rule.
+    # Reserved for PR 3 — not in any catalog yet.
     assert is_fal_model("fal:seedance-1.5-pro") is False
     assert is_fal_model("seedance-1.5-pro") is False
     assert is_fal_model("") is False
     assert is_fal_model("anything-else") is False
+
+
+def test_is_fal_t2i_model_recognizes_only_t2i_catalog():
+    """T2I predicate stays narrow — won't accept the I2I edit model."""
+    assert is_fal_t2i_model("fal:flux-schnell") is True
+    assert is_fal_t2i_model("fal:ideogram-v3") is True
+    assert is_fal_t2i_model("fal:flux-pro-kontext") is False  # edit-only model
+    assert is_fal_t2i_model("gemini-2.5-flash-image") is False
+    assert is_fal_t2i_model("") is False
+
+
+def test_is_fal_i2i_model_recognizes_only_i2i_catalog():
+    """I2I predicate stays narrow — won't accept any T2I generation model."""
+    assert is_fal_i2i_model("fal:flux-pro-kontext") is True
+    assert is_fal_i2i_model("fal:flux-schnell") is False
+    assert is_fal_i2i_model("fal:flux-1.1-pro-ultra") is False
+    assert is_fal_i2i_model("gemini-2.5-flash-image") is False
+    assert is_fal_i2i_model("") is False
+
+
+def test_t2i_and_i2i_catalog_keys_are_disjoint():
+    """No model id may live in both catalogs — the predicate semantics rely on this."""
+    assert not (set(FAL_T2I_CATALOG) & set(FAL_I2I_CATALOG))
 
 
 def test_get_fal_t2i_spec_returns_spec_for_known_model():
@@ -348,35 +381,251 @@ def test_invoke_fal_image_sync_recraft_fanout_uses_parallel_calls(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_model_availability_import_stays_tier_a_only():
+def test_model_availability_import_stays_tier_a_only(tmp_path):
     """Importing model_availability must NOT pull in heavy media deps.
 
     Regression guard for the Tier A / Tier B split. If anyone moves an
     `fal_client` / `PIL` / `cv2` / `requests` / video-utility import to
     module-level in `fal_adapter.py` (Tier A), this test will fail.
 
-    Tier A is the path used by `model_availability.image_model_availability_message`
-    to render the catalog text on error paths. Keeping it light avoids loading
-    ~100 MB of media-pipeline deps just to print a help message.
+    Runs in a clean Python subprocess so the import audit is hermetic — any
+    earlier test that already cached `fal_client` / `PIL` / `requests` in this
+    process's `sys.modules` doesn't poison the result, and (more importantly)
+    popping or re-loading those modules can't poison neighboring tests that
+    hold a module-top `from PIL import Image` reference.
     """
-    import importlib
-    import sys
+    import subprocess
+    import sys as _sys
+    import textwrap
+    from pathlib import Path
 
-    forbidden = ("fal_client", "PIL", "PIL.Image", "cv2", "requests")
-    # Drop any pre-cached entries so the import below performs a real load.
-    # `pytest.importorskip("fal_client")` at module top of this file caches
-    # `fal_client`, and other tests may have triggered PIL / requests loads —
-    # so we explicitly reset before observing.
-    for name in forbidden:
-        sys.modules.pop(name, None)
-    for name in ("shared_tools.model_availability", "shared_tools.fal_adapter"):
-        sys.modules.pop(name, None)
+    openswarm_root = Path(__file__).resolve().parents[2] / "src" / "agency_swarm" / "_templates" / "openswarm"
 
-    importlib.import_module("shared_tools.model_availability")
+    # Narrowed forbidden list: only modules `fal_adapter` itself is responsible
+    # for keeping out of Tier A. `requests` and `PIL` are pulled transitively by
+    # `openai_client_utils.py` (which imports `from openai import OpenAI`),
+    # which is unavoidable here and unrelated to the fal_adapter Tier A/B split.
+    script = textwrap.dedent(
+        f"""
+        import sys
+        sys.path.insert(0, {str(openswarm_root)!r})
 
-    leaked = [name for name in forbidden if name in sys.modules]
-    assert not leaked, (
-        f"Importing `shared_tools.model_availability` pulled in {leaked!r} — "
-        f"Tier A leaked. Move the offending import inside a function in "
-        f"`shared_tools/fal_adapter.py`."
+        import shared_tools.model_availability  # noqa: F401
+
+        forbidden = ("fal_client", "cv2")
+        leaked = [name for name in forbidden if name in sys.modules]
+        if leaked:
+            print("LEAKED:" + ",".join(leaked))
+            sys.exit(1)
+        print("OK")
+        """
     )
+    script_path = tmp_path / "tier_a_audit.py"
+    script_path.write_text(script, encoding="utf-8")
+
+    result = subprocess.run(
+        [_sys.executable, str(script_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"Tier A leaked heavy imports. Move them inside functions in "
+        f"`shared_tools/fal_adapter.py`.\n"
+        f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# PR 2: I2I (image-edit) catalog / metadata
+# ---------------------------------------------------------------------------
+
+
+def test_i2i_catalog_contains_only_flux_kontext():
+    """The PR 2 I2I catalog ships exactly one entry — Flux Kontext."""
+    assert set(FAL_I2I_CATALOG.keys()) == {"fal:flux-pro-kontext"}
+
+
+def test_get_fal_i2i_spec_returns_spec_for_flux_kontext():
+    spec = get_fal_i2i_spec("fal:flux-pro-kontext")
+    assert isinstance(spec, FalI2ISpec)
+    assert spec.endpoint == "fal-ai/flux-pro/kontext"
+    assert spec.family == "flux_kontext"
+    assert spec.cost_tier == "premium"
+
+
+def test_get_fal_i2i_spec_raises_with_listing_on_unknown():
+    with pytest.raises(ValueError) as excinfo:
+        get_fal_i2i_spec("fal:flux-schnell")  # T2I model — should miss I2I lookup
+    message = str(excinfo.value)
+    assert "Unknown FAL I2I (image-edit) model 'fal:flux-schnell'" in message
+    assert "fal:flux-pro-kontext" in message  # listing includes I2I keys
+
+
+def test_flux_kontext_supported_aspect_ratios_match_phase0_verification():
+    """Sanity: AR set is the verified Flux Pro family set, NOT including 4:5 or 5:4."""
+    spec = get_fal_i2i_spec("fal:flux-pro-kontext")
+    assert spec.supported_aspect_ratios == frozenset({"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"})
+    # Spot-check the deliberately-rejected ratios.
+    for ar in ("4:5", "5:4"):
+        with pytest.raises(ValueError):
+            validate_fal_aspect_ratio(spec, ar)
+
+
+def test_flux_kontext_cost_tier_hint_is_premium():
+    assert "premium" in cost_tier_hint(get_fal_i2i_spec("fal:flux-pro-kontext"))
+
+
+# ---------------------------------------------------------------------------
+# PR 2: Flux Kontext request builder
+# ---------------------------------------------------------------------------
+
+
+def test_flux_kontext_request_includes_required_fields():
+    spec = get_fal_i2i_spec("fal:flux-pro-kontext")
+    args = _build_flux_kontext_request(
+        spec,
+        prompt="replace the background with a starry sky",
+        image_url="https://x/in.png",
+        aspect_ratio="16:9",
+        num_images=1,
+    )
+    assert args == {
+        "prompt": "replace the background with a starry sky",
+        "image_url": "https://x/in.png",
+        "aspect_ratio": "16:9",
+        "num_images": 1,
+    }
+
+
+# ---------------------------------------------------------------------------
+# PR 2: invoke_fal_image_edit_sync — end-to-end with mocks
+# ---------------------------------------------------------------------------
+
+
+def test_invoke_fal_image_edit_sync_missing_key_raises_with_availability_text(monkeypatch):
+    _patch_fal_key(monkeypatch, value=None)
+    spec = get_fal_i2i_spec("fal:flux-pro-kontext")
+    with pytest.raises(ValueError) as excinfo:
+        invoke_fal_image_edit_sync(
+            spec,
+            prompt="edit",
+            input_image_ref="https://x/in.png",
+            product_name="p",
+            aspect_ratio="1:1",
+            num_variants=1,
+        )
+    msg = str(excinfo.value)
+    assert "FAL_KEY is not set" in msg
+    # And the umbrella availability message lists the I2I row.
+    assert "Via FAL.AI (I2I image-edit" in msg
+    assert "fal:flux-pro-kontext" in msg
+
+
+def test_invoke_fal_image_edit_sync_validates_aspect_ratio(monkeypatch):
+    _patch_fal_key(monkeypatch)
+    _patch_fal_client(monkeypatch, subscribe_result={"images": [{"url": "x"}]})
+    _mock_requests_get(monkeypatch)
+    spec = get_fal_i2i_spec("fal:flux-pro-kontext")
+    with pytest.raises(ValueError):
+        invoke_fal_image_edit_sync(
+            spec,
+            prompt="edit",
+            input_image_ref="https://x/in.png",
+            product_name="p",
+            aspect_ratio="4:5",  # NOT supported by Flux Kontext
+            num_variants=1,
+        )
+
+
+def test_invoke_fal_image_edit_sync_passes_url_through_unchanged(monkeypatch):
+    """When input_image_ref is an HTTPS URL, no upload_file call should happen."""
+    _patch_fal_key(monkeypatch)
+    client = _patch_fal_client(
+        monkeypatch,
+        subscribe_result={"images": [{"url": "https://x/out.png"}]},
+    )
+    _mock_requests_get(monkeypatch)
+
+    spec = get_fal_i2i_spec("fal:flux-pro-kontext")
+    images = invoke_fal_image_edit_sync(
+        spec,
+        prompt="add neon glow",
+        input_image_ref="https://x/in.png",
+        product_name="p",
+        aspect_ratio="16:9",
+        num_variants=1,
+    )
+    assert len(images) == 1
+    assert isinstance(images[0], Image.Image)
+
+    # URL passthrough: no upload_file should have been called.
+    client.upload_file.assert_not_called()
+
+    # And the request payload uses the URL directly.
+    client.subscribe.assert_called_once_with(
+        "fal-ai/flux-pro/kontext",
+        arguments={
+            "prompt": "add neon glow",
+            "image_url": "https://x/in.png",
+            "aspect_ratio": "16:9",
+            "num_images": 1,
+        },
+    )
+
+
+def test_invoke_fal_image_edit_sync_uploads_local_file(monkeypatch, tmp_path):
+    """When input_image_ref is a local path, the adapter calls fal.upload_file."""
+    _patch_fal_key(monkeypatch)
+    client = _patch_fal_client(
+        monkeypatch,
+        subscribe_result={"images": [{"url": "https://x/out.png"}]},
+    )
+    client.upload_file = MagicMock(return_value="https://fal-cdn/uploaded.png")
+    _mock_requests_get(monkeypatch)
+
+    # Create a real local image so resolve_image_for_fal_sync finds it.
+    src = tmp_path / "input.png"
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(src, format="PNG")
+
+    spec = get_fal_i2i_spec("fal:flux-pro-kontext")
+    images = invoke_fal_image_edit_sync(
+        spec,
+        prompt="add fog",
+        input_image_ref=str(src),
+        product_name="p",
+        aspect_ratio="1:1",
+        num_variants=1,
+    )
+    assert len(images) == 1
+
+    client.upload_file.assert_called_once_with(str(src))
+    args = client.subscribe.call_args.kwargs["arguments"]
+    assert args["image_url"] == "https://fal-cdn/uploaded.png"
+
+
+# ---------------------------------------------------------------------------
+# PR 2: scope guard — no video / Seedance / normalize symbols leaked in
+# ---------------------------------------------------------------------------
+
+
+def test_pr2_does_not_introduce_pr3_symbols():
+    """PR 2 must not add video catalog, Seedance alias, or normalize helpers.
+
+    Those land in PR 3. This test gives PR 3 the opportunity to ship them
+    deliberately; until then, accidentally exposing any of these names from
+    `shared_tools.fal_adapter` fails the build.
+    """
+    import shared_tools.fal_adapter as adapter
+
+    forbidden = (
+        "FAL_VIDEO_CATALOG",
+        "FalVideoSpec",
+        "SEEDANCE_LEGACY_ALIAS",
+        "normalize_fal_model_id",
+        "invoke_fal_video",
+        "validate_fal_duration",
+        "get_fal_video_spec",
+    )
+    present = [name for name in forbidden if hasattr(adapter, name)]
+    assert not present, f"PR 2 must not introduce PR 3 symbols: {present!r}. Add them in PR 3 with their own tests."

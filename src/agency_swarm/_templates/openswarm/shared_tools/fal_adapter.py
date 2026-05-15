@@ -86,14 +86,65 @@ FAL_T2I_CATALOG: dict[str, FalT2ISpec] = {
 }
 
 
-def is_fal_model(model_id: str) -> bool:
-    """Return True only for keys present in PR 1's curated T2I catalog.
+FalI2IFamily = Literal["flux_kontext"]
 
-    PR 2 (image edit) and PR 3 (video + Seedance alias) widen this. In PR 1 the
-    function must reject every direct-provider model id, every unknown string,
-    and `"fal:flux-pro-kontext"` (which is reserved for PR 2 but not yet in the catalog).
+
+@dataclass(frozen=True)
+class FalI2ISpec:
+    """Metadata for a curated FAL image-to-image (edit) endpoint.
+
+    Same structural shape as FalT2ISpec, kept as a separate type so tool-side
+    dispatch (`is_fal_i2i_model`, `get_fal_i2i_spec`) can never accidentally
+    accept a T2I model into an edit code path, or vice versa.
     """
+
+    user_id: str
+    endpoint: str
+    family: FalI2IFamily
+    supported_aspect_ratios: frozenset[str]
+    description: str
+    cost_tier: FalCostTier
+
+
+# All I2I rows are verified in docs/fal_catalog_verification.md.
+FAL_I2I_CATALOG: dict[str, FalI2ISpec] = {
+    "fal:flux-pro-kontext": FalI2ISpec(
+        user_id="fal:flux-pro-kontext",
+        endpoint="fal-ai/flux-pro/kontext",
+        family="flux_kontext",
+        supported_aspect_ratios=frozenset({"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"}),
+        description="Instruction-driven image edit. Premium tier — one variant per call.",
+        cost_tier="premium",
+    ),
+}
+
+# Sanity: a model id must never appear in both catalogs. If a future PR
+# introduces a multi-modality endpoint we will need to redesign the predicates,
+# so make the assumption explicit.
+assert not (FAL_T2I_CATALOG.keys() & FAL_I2I_CATALOG.keys()), (
+    "FAL_T2I_CATALOG and FAL_I2I_CATALOG must have disjoint keys"
+)
+
+
+def is_fal_model(model_id: str) -> bool:
+    """Return True for any model id present in the curated FAL catalogs.
+
+    This is the umbrella predicate — useful for "is this a fal: route at all?"
+    checks. Tool-side dispatch should use the modality-specific predicates
+    (`is_fal_t2i_model`, `is_fal_i2i_model`) so a T2I tool can never accidentally
+    accept an edit-only model and vice versa.
+    """
+    return model_id in FAL_T2I_CATALOG or model_id in FAL_I2I_CATALOG
+
+
+def is_fal_t2i_model(model_id: str) -> bool:
+    """Return True only for keys present in `FAL_T2I_CATALOG`."""
     return model_id in FAL_T2I_CATALOG
+
+
+def is_fal_i2i_model(model_id: str) -> bool:
+    """Return True only for keys present in `FAL_I2I_CATALOG`."""
+    return model_id in FAL_I2I_CATALOG
 
 
 def get_fal_t2i_spec(model_id: str) -> FalT2ISpec:
@@ -107,7 +158,20 @@ def get_fal_t2i_spec(model_id: str) -> FalT2ISpec:
     return spec
 
 
-def validate_fal_aspect_ratio(spec: FalT2ISpec, aspect_ratio: str) -> None:
+def get_fal_i2i_spec(model_id: str) -> FalI2ISpec:
+    """Look up an I2I (image-edit) spec by user-facing id.
+
+    Raises ValueError with the full set of known I2I keys on miss.
+    """
+    spec = FAL_I2I_CATALOG.get(model_id)
+    if spec is None:
+        raise ValueError(
+            f"Unknown FAL I2I (image-edit) model '{model_id}'. Known models: {sorted(FAL_I2I_CATALOG.keys())}"
+        )
+    return spec
+
+
+def validate_fal_aspect_ratio(spec: FalT2ISpec | FalI2ISpec, aspect_ratio: str) -> None:
     """Reject aspect ratios outside the spec's supported set."""
     if aspect_ratio not in spec.supported_aspect_ratios:
         raise ValueError(
@@ -116,7 +180,7 @@ def validate_fal_aspect_ratio(spec: FalT2ISpec, aspect_ratio: str) -> None:
         )
 
 
-def cost_tier_hint(spec: FalT2ISpec) -> str:
+def cost_tier_hint(spec: FalT2ISpec | FalI2ISpec) -> str:
     """One-line cost surface for tool output.
 
     Intentionally tier-only, never a numeric price. Numeric pricing only ships
@@ -188,7 +252,7 @@ def _build_aspect_ratio_family_request(spec: FalT2ISpec, *, prompt: str, aspect_
     }
 
 
-def _parse_images_response(spec: FalT2ISpec, result: dict) -> list[str]:
+def _parse_images_response(spec: FalT2ISpec | FalI2ISpec, result: dict) -> list[str]:
     """Extract image URLs from a FAL response.
 
     All five PR 1 endpoints return `result["images"][i]["url"]`. This is verified
@@ -304,3 +368,110 @@ def _invoke_recraft_fanout(
             if result is not None:
                 results_by_index[idx] = result
     return [results_by_index[i] for i in sorted(results_by_index)]
+
+
+# ---------------------------------------------------------------------------
+# Tier B — image-to-image (edit) invocation
+# ---------------------------------------------------------------------------
+
+
+def resolve_image_for_fal_sync(fal, product_name: str, ref: str) -> str:
+    """Resolve a tool-side image reference into a FAL-usable URL.
+
+    Accepts the same three reference shapes as the rest of the codebase
+    (matches `RemoveBackground._resolve_to_upload_url` and the Seedance I2V
+    path verbatim, so the contract is uniform):
+
+    1. HTTP(S) URL → passed through unchanged.
+    2. Absolute or relative local path → uploaded via `fal.upload_file()` to
+       produce a FAL-storage URL.
+    3. Generated-image name (no extension) → looked up under
+       `mnt/{product_name}/generated_images/`, then uploaded.
+
+    Lives in Tier B because `fal.upload_file` needs an active `fal_client`
+    handle. The image_io helpers are imported lazily so this function does
+    not pull `PIL` / `image_io` into Tier A.
+    """
+    from urllib.parse import urlparse
+
+    from image_generation_agent.tools.utils.image_io import (
+        find_image_path_from_name,
+        get_images_dir,
+    )
+
+    ref = (ref or "").strip()
+    if not ref:
+        raise ValueError("image reference must not be empty")
+
+    parsed = urlparse(ref)
+    if parsed.scheme in ("http", "https"):
+        return ref
+
+    from pathlib import Path
+
+    candidate = Path(ref).expanduser().resolve()
+    if candidate.exists():
+        return fal.upload_file(str(candidate))
+
+    images_dir = get_images_dir(product_name)
+    by_name = find_image_path_from_name(images_dir, ref)
+    if by_name is not None:
+        return fal.upload_file(str(by_name))
+
+    raise FileNotFoundError(f"Could not resolve image reference '{ref}' as URL, path, or name in {images_dir}.")
+
+
+def _build_flux_kontext_request(
+    spec: FalI2ISpec, *, prompt: str, image_url: str, aspect_ratio: str, num_images: int
+) -> dict:
+    """Build the request payload for Flux Kontext (verified Phase 0)."""
+    return {
+        "prompt": prompt,
+        "image_url": image_url,
+        "aspect_ratio": aspect_ratio,
+        "num_images": num_images,
+    }
+
+
+def invoke_fal_image_edit_sync(
+    spec: FalI2ISpec,
+    *,
+    prompt: str,
+    input_image_ref: str,
+    product_name: str,
+    aspect_ratio: str,
+    num_variants: int = 1,
+) -> list:
+    """Run a FAL I2I (image-edit) endpoint and return downloaded PIL images.
+
+    `input_image_ref` is a tool-side reference (URL, path, or generated-image
+    name); the adapter resolves it to a FAL-storage URL internally via
+    `resolve_image_for_fal_sync`.
+
+    The caller (typically `EditImages._run_fal_edit`) is responsible for
+    saving the images via the existing `save_image` utility. Returning PIL
+    objects (not URLs) prevents callers from accidentally relying on FAL's
+    time-limited URLs.
+    """
+    import fal_client
+
+    api_key = _require_fal_key()
+    validate_fal_aspect_ratio(spec, aspect_ratio)
+
+    fal = fal_client.SyncClient(key=api_key)
+    image_url = resolve_image_for_fal_sync(fal, product_name, input_image_ref)
+
+    if spec.family == "flux_kontext":
+        args = _build_flux_kontext_request(
+            spec,
+            prompt=prompt,
+            image_url=image_url,
+            aspect_ratio=aspect_ratio,
+            num_images=num_variants,
+        )
+    else:
+        raise ValueError(f"Unsupported FAL I2I family: {spec.family!r}")
+
+    result = fal.subscribe(spec.endpoint, arguments=args)
+    urls = _parse_images_response(spec, result)
+    return [_download_url_to_pil(url) for url in urls]
