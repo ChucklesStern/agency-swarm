@@ -110,17 +110,22 @@ def test_catalog_contains_expected_pr1_models():
 
 
 def test_is_fal_model_is_umbrella_across_t2i_and_i2i():
-    """`is_fal_model` returns True for any curated FAL model (T2I or I2I)."""
+    """`is_fal_model` returns True for any curated FAL model (T2I, I2I, or video).
+
+    Video-side assertions are duplicated in `test_fal_adapter_video.py::test_is_fal_model_umbrella_includes_video`
+    so the umbrella behavior is covered from both directions.
+    """
     # PR 1 T2I catalog
     assert is_fal_model("fal:flux-schnell") is True
     assert is_fal_model("fal:flux-1.1-pro-ultra") is True
     # PR 2 I2I catalog
     assert is_fal_model("fal:flux-pro-kontext") is True
+    # PR 3 video catalog (one canonical id; full coverage in video test file)
+    assert is_fal_model("fal:seedance-1.5-pro") is True
     # Direct-provider models stay out
     assert is_fal_model("gemini-2.5-flash-image") is False
     assert is_fal_model("gpt-image-1.5") is False
-    # Reserved for PR 3 — not in any catalog yet.
-    assert is_fal_model("fal:seedance-1.5-pro") is False
+    # Legacy literal is NOT in the umbrella — callers must normalize first.
     assert is_fal_model("seedance-1.5-pro") is False
     assert is_fal_model("") is False
     assert is_fal_model("anything-else") is False
@@ -606,28 +611,6 @@ def test_invoke_fal_image_edit_sync_uploads_local_file(monkeypatch, tmp_path):
     assert args["image_url"] == "https://fal-cdn/uploaded.png"
 
 
-# ---------------------------------------------------------------------------
-# PR 2: scope guard — no video / Seedance / normalize symbols leaked in
-# ---------------------------------------------------------------------------
-
-
-def test_pr2_does_not_introduce_pr3_symbols():
-    """PR 2 must not add video catalog, Seedance alias, or normalize helpers.
-
-    Those land in PR 3. This test gives PR 3 the opportunity to ship them
-    deliberately; until then, accidentally exposing any of these names from
-    `shared_tools.fal_adapter` fails the build.
-    """
-    import shared_tools.fal_adapter as adapter
-
-    forbidden = (
-        "FAL_VIDEO_CATALOG",
-        "FalVideoSpec",
-        "SEEDANCE_LEGACY_ALIAS",
-        "normalize_fal_model_id",
-        "invoke_fal_video",
-        "validate_fal_duration",
-        "get_fal_video_spec",
-    )
-    present = [name for name in forbidden if hasattr(adapter, name)]
-    assert not present, f"PR 2 must not introduce PR 3 symbols: {present!r}. Add them in PR 3 with their own tests."
+# Note: the PR-2 scope guard `test_pr2_does_not_introduce_pr3_symbols` was
+# removed when PR 3 (video catalog) landed and intentionally exposed those
+# symbols. Video unit tests live in `test_fal_adapter_video.py`.

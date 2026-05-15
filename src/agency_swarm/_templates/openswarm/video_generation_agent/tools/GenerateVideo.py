@@ -1,36 +1,36 @@
-"""Video generation tool supporting Sora (OpenAI), Veo (Google Gemini), and Seedance (fal.ai) models."""
+"""Video generation tool: Sora (OpenAI), Veo (Google Gemini), and FAL.AI catalog (Kling, Hailuo, Luma, Wan, Seedance)."""
 
 from typing import Literal, Optional
 import asyncio
 import logging
-import os
 import re
 from dotenv import load_dotenv
 import mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
 
-import fal_client
-import httpx
-from openai import OpenAI
 from pydantic import Field, field_validator, model_validator
 from google.genai.types import GenerateVideosConfig, Image, VideoGenerationReferenceImage
 from PIL import Image as PILImage
 from io import BytesIO
 
 from agency_swarm import BaseTool, ToolOutputText
+from shared_tools.fal_adapter import (
+    cost_tier_hint,
+    get_fal_video_spec,
+    invoke_fal_video,
+    is_fal_video_model,
+    normalize_fal_model_id,
+    validate_fal_video_duration,
+)
 from shared_tools.model_availability import video_model_availability_message
 from shared_tools.openai_client_utils import get_openai_client
 
 from .utils.video_utils import (
     ensure_not_blank,
-    extract_last_frame,
-    generate_spritesheet,
     get_gemini_client,
-    get_videos_dir,
     is_veo_model,
     is_sora_model,
-    is_seedance_model,
     resolve_input_reference,
     validate_resolution,
     save_video_with_metadata,
@@ -91,7 +91,14 @@ class GenerateVideo(BaseTool):
         "sora-2-pro",
         "veo-3.1-generate-preview",
         "veo-3.1-fast-generate-preview",
-        "seedance-1.5-pro",
+        "seedance-1.5-pro",  # legacy alias — normalized to "fal:seedance-1.5-pro" pre-dispatch
+        "fal:kling-v3-pro-t2v",
+        "fal:kling-v3-pro-i2v",
+        "fal:hailuo-02-standard-t2v",
+        "fal:hailuo-02-pro-i2v",
+        "fal:luma-ray-2-t2v",
+        "fal:wan-2.5-t2v",
+        "fal:seedance-1.5-pro",
     ] = Field(
         ...,
         description="Video generation model to use.",
@@ -155,22 +162,44 @@ class GenerateVideo(BaseTool):
         return validate_resolution(value)
 
     @model_validator(mode="after")
+    def _normalize_legacy_model(self) -> "GenerateVideo":
+        """Translate the legacy `seedance-1.5-pro` literal to `fal:seedance-1.5-pro`.
+
+        Keeps the literal accepted for one release with a one-time deprecation
+        log; downstream dispatch (`is_fal_video_model`) only sees canonical ids.
+        """
+        canonical = normalize_fal_model_id(self.model)
+        if canonical != self.model:
+            logger.warning(
+                "Model '%s' is deprecated; switch to '%s'. The legacy alias will be removed in a future release.",
+                self.model,
+                canonical,
+            )
+            object.__setattr__(self, "model", canonical)
+        return self
+
+    @model_validator(mode="after")
     def _validate_seconds_for_model(self) -> "GenerateVideo":
         if is_sora_model(self.model) and self.seconds not in {4, 8, 12}:
             raise ValueError("Sora supports only 4, 8, or 12 second clips.")
         if is_veo_model(self.model) and self.seconds not in {4, 6, 8}:
             raise ValueError("Veo supports only 4, 6, or 8 second clips.")
+        if is_fal_video_model(self.model):
+            validate_fal_video_duration(get_fal_video_spec(self.model), self.seconds)
         if is_sora_model(self.model) and self.asset_image_ref is not None:
             raise ValueError("Sora does not support asset_image_ref. Use first_frame_ref instead.")
-        if is_seedance_model(self.model) and self.asset_image_ref is not None:
-            raise ValueError("Seedance does not support asset_image_ref. Use first_frame_ref instead.")
+        if is_fal_video_model(self.model) and self.asset_image_ref is not None:
+            raise ValueError(
+                f"FAL video model '{self.model}' does not support asset_image_ref. "
+                "Use first_frame_ref instead."
+            )
         return self
 
     async def run(self) -> list:
         """Generate a marketing video using the chosen model."""
         load_dotenv(override=True)
-        if is_seedance_model(self.model):
-            return await self._generate_with_seedance(self.model)
+        if is_fal_video_model(self.model):
+            return await self._run_fal()
 
         if is_sora_model(self.model):
             return await self._generate_with_sora(self.model)
@@ -179,6 +208,25 @@ class GenerateVideo(BaseTool):
             return await self._generate_with_veo(self.model)
 
         raise ValueError(f"Unsupported video model: {self.model}")
+
+    async def _run_fal(self) -> list:
+        """Generate video via the FAL adapter (covers Kling, Hailuo, Luma, Wan, Seedance)."""
+        spec = get_fal_video_spec(self.model)
+        output_path = await invoke_fal_video(
+            spec,
+            prompt=self.prompt,
+            seconds=self.seconds,
+            size=self.size,
+            name=self.name,
+            product_name=self.product_name,
+            first_frame_ref=self.first_frame_ref,
+        )
+        return [
+            ToolOutputText(
+                type="text", text=f"Video saved to `{self.name}.mp4`\nPath: {output_path}"
+            ),
+            ToolOutputText(type="text", text=cost_tier_hint(spec)),
+        ]
 
     async def _generate_with_sora(self, model: str) -> dict:
         """Generate video using OpenAI's Sora API."""
@@ -452,102 +500,6 @@ class GenerateVideo(BaseTool):
             raise
         except Exception as e:
             raise RuntimeError(f"Veo video generation failed: {str(e)}")
-
-    async def _generate_with_seedance(self, model: str) -> list:
-        """Generate video using ByteDance Seedance 1.5 Pro via fal.ai."""
-        api_key = os.getenv("FAL_KEY")
-        if not api_key:
-            raise ValueError(
-                video_model_availability_message(
-                    self,
-                    failed_requirement="FAL_KEY is not set. Seedance video generation requires the fal.ai add-on key.",
-                )
-            )
-        fal = fal_client.SyncClient(key=api_key)
-
-        duration = str(self.seconds)
-
-        # Map size → fal.ai resolution label and aspect ratio
-        width, height = map(int, self.size.split("x"))
-        max_dim = max(width, height)
-        if max_dim >= 1080:
-            resolution = "1080p"
-        elif max_dim >= 720:
-            resolution = "720p"
-        else:
-            resolution = "480p"
-
-        if width < height:
-            aspect_ratio = "9:16"
-        elif width > height:
-            aspect_ratio = "16:9"
-        else:
-            aspect_ratio = "1:1"
-
-        if self.first_frame_ref:
-            endpoint = "fal-ai/bytedance/seedance/v1.5/pro/image-to-video"
-            image_url = await self._resolve_image_for_fal(self.first_frame_ref, fal)
-            arguments: dict = {
-                "prompt": self.prompt,
-                "image_url": image_url,
-                "duration": duration,
-                "resolution": resolution,
-            }
-        else:
-            endpoint = "fal-ai/bytedance/seedance/v1.5/pro/text-to-video"
-            arguments = {
-                "prompt": self.prompt,
-                "duration": duration,
-                "resolution": resolution,
-                "aspect_ratio": aspect_ratio,
-            }
-
-        logger.info(f"Submitting video generation request to Seedance 1.5 Pro (fal.ai, {endpoint})...")
-        result = await asyncio.to_thread(
-            fal.subscribe, endpoint, arguments=arguments, with_logs=True
-        )
-
-        output_url = (result.get("video") or {}).get("url")
-        if not output_url:
-            raise RuntimeError(f"Seedance did not return a video URL. Response: {result}")
-
-        videos_dir = get_videos_dir(self.product_name)
-        output_path = os.path.join(videos_dir, f"{self.name}.mp4")
-
-        logger.info(f"Downloading Seedance video to {output_path}...")
-        async with httpx.AsyncClient(timeout=120.0) as http:
-            response = await http.get(output_url)
-            response.raise_for_status()
-        with open(output_path, "wb") as fh:
-            fh.write(response.content)
-
-        spritesheet_path = os.path.join(videos_dir, f"{self.name}_spritesheet.jpg")
-        await asyncio.to_thread(generate_spritesheet, output_path, spritesheet_path)
-
-        last_frame_path = os.path.join(videos_dir, f"{self.name}_last_frame.jpg")
-        await asyncio.to_thread(extract_last_frame, output_path, last_frame_path)
-
-        return [ToolOutputText(type="text", text=f"Video saved to `{self.name}.mp4`\nPath: {output_path}")]
-
-    async def _resolve_image_for_fal(self, image_ref: str, fal: fal_client.SyncClient) -> str:
-        """Resolve a local path or image name to a fal.ai-accessible URL."""
-        parsed = urlparse(image_ref)
-        if parsed.scheme in ("http", "https"):
-            return image_ref
-
-        path = Path(image_ref).expanduser().resolve()
-        if not path.exists():
-            images_dir = get_images_dir(self.product_name)
-            _, image_path, err = load_image_by_name(
-                image_ref, images_dir, [".png", ".jpg", ".jpeg", ".webp"]
-            )
-            if err:
-                raise FileNotFoundError(
-                    f"Reference image '{image_ref}' not found in {images_dir}"
-                )
-            path = Path(image_path)
-
-        return await asyncio.to_thread(fal.upload_file, str(path))
 
 if __name__ == "__main__":
     # Basic test invocation (Sora)
