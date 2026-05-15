@@ -62,14 +62,15 @@ def test_flux_schnell_live_single_variant():
 def test_flux_pro_kontext_live_single_variant():
     """One real Flux Kontext call edits an input URL and returns a PIL Image.
 
-    Premium tier — the adapter enforces single variant. Uses FAL's public
-    example input so no chained dependency on the T2I test.
+    Premium tier — the adapter enforces single variant. Uses FAL's own
+    self-hosted example URL (the one its OpenAPI schema cites as the
+    `image_url` example) so FAL's downloader can actually reach it.
     """
     spec = get_fal_i2i_spec("fal:flux-pro-kontext")
     images = invoke_fal_image_edit_sync(
         spec,
-        prompt="Turn the cat into a tiger.",
-        input_image_ref="https://storage.googleapis.com/falserverless/example_inputs/edit_image_input_1.jpg",
+        prompt="Put a small donut next to the main subject.",
+        input_image_ref="https://v3.fal.media/files/rabbit/rmgBxhwGYb2d3pl3x9sKf_output.png",
         product_name="_live_test",
         aspect_ratio="1:1",
         num_variants=1,
