@@ -16,8 +16,9 @@ from pydantic import ValidationError
 
 pytest.importorskip("fal_client")
 
+from image_generation_agent.tools.EditImages import EditImages  # noqa: E402
 from image_generation_agent.tools.GenerateImages import GenerateImages  # noqa: E402
-from shared_tools.fal_adapter import FAL_T2I_CATALOG  # noqa: E402
+from shared_tools.fal_adapter import FAL_I2I_CATALOG, FAL_T2I_CATALOG  # noqa: E402
 
 from agency_swarm import ToolOutputText  # noqa: E402
 
@@ -254,3 +255,200 @@ def test_run_does_not_call_fal_for_gemini_model(monkeypatch):
     )
     assert not is_fal_model(tool.model)
     sentinel.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# PR 2: EditImages — Flux Kontext (fal:flux-pro-kontext) integration
+# ---------------------------------------------------------------------------
+
+
+def test_editimages_literal_includes_only_fal_i2i_catalog_keys():
+    """Drift guard: every `fal:` value in EditImages.model Literal must be an I2I key."""
+    model_annotation = EditImages.model_fields["model"].annotation
+    literal_values = set(get_args(model_annotation))
+    fal_values = {v for v in literal_values if v.startswith("fal:")}
+    assert fal_values == set(FAL_I2I_CATALOG.keys())
+
+
+def test_editimages_does_not_accept_t2i_models_in_literal():
+    """Cross-modality guard: T2I-only fal: ids must NOT appear in EditImages.model."""
+    model_annotation = EditImages.model_fields["model"].annotation
+    literal_values = set(get_args(model_annotation))
+    t2i_keys_in_edit_literal = literal_values & set(FAL_T2I_CATALOG.keys())
+    assert not t2i_keys_in_edit_literal
+
+
+def test_editimages_premium_model_rejects_multiple_variants():
+    """Flux Kontext is premium — `num_variants > 1` must be rejected."""
+    with pytest.raises(ValidationError) as excinfo:
+        EditImages(
+            product_name="t",
+            input_image_ref="https://x/in.png",
+            edit_prompt="add stars",
+            output_file_name="out",
+            model="fal:flux-pro-kontext",
+            num_variants=2,
+            aspect_ratio="1:1",
+        )
+    message = str(excinfo.value)
+    assert "premium-tier" in message
+    assert "num_variants=1" in message
+
+
+def test_editimages_premium_model_accepts_single_variant():
+    tool = EditImages(
+        product_name="t",
+        input_image_ref="https://x/in.png",
+        edit_prompt="add stars",
+        output_file_name="out",
+        model="fal:flux-pro-kontext",
+        num_variants=1,
+        aspect_ratio="1:1",
+    )
+    assert tool.num_variants == 1
+
+
+def test_editimages_rejects_unsupported_ar_for_flux_kontext():
+    """Flux Kontext doesn't accept 4:5 or 5:4 (tool Literal has them, spec doesn't)."""
+    with pytest.raises(ValidationError) as excinfo:
+        EditImages(
+            product_name="t",
+            input_image_ref="https://x/in.png",
+            edit_prompt="x",
+            output_file_name="x",
+            model="fal:flux-pro-kontext",
+            aspect_ratio="4:5",
+        )
+    assert "not supported by FAL model 'fal:flux-pro-kontext'" in str(excinfo.value)
+
+
+def test_editimages_unsupported_ar_for_direct_model_still_uses_direct_validator():
+    """Pre-existing direct-provider AR validator must keep firing for non-FAL models."""
+    with pytest.raises(ValidationError):
+        EditImages(
+            product_name="t",
+            input_image_ref="https://x/in.png",
+            edit_prompt="x",
+            output_file_name="x",
+            model="gpt-image-1.5",
+            aspect_ratio="21:9",  # gpt-image-1.5 only supports 1:1, 2:3, 3:2
+        )
+
+
+def test_editimages_run_dispatches_to_fal_branch_and_appends_cost_tier_hint(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "image_generation_agent.tools.EditImages.invoke_fal_image_edit_sync",
+        lambda spec, *, prompt, input_image_ref, product_name, aspect_ratio, num_variants: [_make_pil()],
+    )
+    monkeypatch.setattr(
+        "image_generation_agent.tools.utils.image_io.MNT_DIR",
+        tmp_path,
+    )
+
+    tool = EditImages(
+        product_name="testprod",
+        input_image_ref="https://x/in.png",
+        edit_prompt="replace background with starry sky",
+        output_file_name="edited",
+        model="fal:flux-pro-kontext",
+        num_variants=1,
+        aspect_ratio="1:1",
+    )
+    outputs = tool.run()
+
+    assert isinstance(outputs, list) and outputs
+    text_items = [o for o in outputs if isinstance(o, ToolOutputText)]
+    hint_texts = [o.text for o in text_items if "Estimated cost tier" in o.text]
+    assert hint_texts
+    assert hint_texts[-1] == ("Estimated cost tier: premium. Check FAL dashboard for exact pricing.")
+
+    saved_files = list((tmp_path / "testprod" / "generated_images").glob("*.png"))
+    assert len(saved_files) == 1
+
+
+def test_editimages_run_passes_correct_arguments_to_adapter(monkeypatch, tmp_path):
+    """The FAL edit branch must forward prompt / input_image_ref / product_name / AR / variants."""
+    captured = {}
+
+    def fake_invoke(spec, *, prompt, input_image_ref, product_name, aspect_ratio, num_variants):
+        captured["endpoint"] = spec.endpoint
+        captured["prompt"] = prompt
+        captured["input_image_ref"] = input_image_ref
+        captured["product_name"] = product_name
+        captured["aspect_ratio"] = aspect_ratio
+        captured["num_variants"] = num_variants
+        return [_make_pil()]
+
+    monkeypatch.setattr(
+        "image_generation_agent.tools.EditImages.invoke_fal_image_edit_sync",
+        fake_invoke,
+    )
+    monkeypatch.setattr(
+        "image_generation_agent.tools.utils.image_io.MNT_DIR",
+        tmp_path,
+    )
+
+    tool = EditImages(
+        product_name="p",
+        input_image_ref="hero_image",
+        edit_prompt="make it night",
+        output_file_name="night",
+        model="fal:flux-pro-kontext",
+        num_variants=1,
+        aspect_ratio="16:9",
+    )
+    tool.run()
+
+    assert captured["endpoint"] == "fal-ai/flux-pro/kontext"
+    assert captured["prompt"] == "make it night"
+    assert captured["input_image_ref"] == "hero_image"
+    assert captured["product_name"] == "p"
+    assert captured["aspect_ratio"] == "16:9"
+    assert captured["num_variants"] == 1
+
+
+def test_editimages_does_not_call_fal_for_gemini_model(monkeypatch):
+    """Gemini/OpenAI dispatch must bypass the FAL edit branch."""
+    sentinel = MagicMock()
+    monkeypatch.setattr(
+        "image_generation_agent.tools.EditImages.invoke_fal_image_edit_sync",
+        sentinel,
+    )
+
+    from shared_tools.fal_adapter import is_fal_i2i_model
+
+    tool = EditImages(
+        product_name="p",
+        input_image_ref="https://x/in.png",
+        edit_prompt="x",
+        output_file_name="x",
+        model="gemini-2.5-flash-image",
+        aspect_ratio="1:1",
+    )
+    assert not is_fal_i2i_model(tool.model)
+    sentinel.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# PR 2: GenerateImages must STILL reject fal:flux-pro-kontext after PR 2
+# ---------------------------------------------------------------------------
+
+
+def test_generateimages_still_rejects_flux_kontext_after_pr2():
+    """Cross-modality guard: Flux Kontext is edit-only and must remain invalid here.
+
+    PR 2 widens `is_fal_model` to umbrella across catalogs, but
+    `GenerateImages.model` Literal does NOT include `fal:flux-pro-kontext`,
+    so Pydantic structurally rejects it before any dispatch runs.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        GenerateImages(
+            product_name="t",
+            prompt="x",
+            file_name="x",
+            model="fal:flux-pro-kontext",
+            aspect_ratio="1:1",
+        )
+    # Structural Pydantic rejection — confirm by message content.
+    text = str(excinfo.value).lower()
+    assert "literal" in text or "input should be" in text

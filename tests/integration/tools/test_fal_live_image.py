@@ -38,7 +38,9 @@ pytestmark = pytest.mark.skipif(
 
 from PIL import Image  # noqa: E402
 from shared_tools.fal_adapter import (  # noqa: E402
+    get_fal_i2i_spec,
     get_fal_t2i_spec,
+    invoke_fal_image_edit_sync,
     invoke_fal_image_sync,
 )
 
@@ -49,6 +51,26 @@ def test_flux_schnell_live_single_variant():
     images = invoke_fal_image_sync(
         spec,
         prompt="A small ceramic mug on a wooden table, soft natural light.",
+        aspect_ratio="1:1",
+        num_variants=1,
+    )
+    assert len(images) == 1
+    assert isinstance(images[0], Image.Image)
+    assert images[0].width > 0 and images[0].height > 0
+
+
+def test_flux_pro_kontext_live_single_variant():
+    """One real Flux Kontext call edits an input URL and returns a PIL Image.
+
+    Premium tier — the adapter enforces single variant. Uses FAL's public
+    example input so no chained dependency on the T2I test.
+    """
+    spec = get_fal_i2i_spec("fal:flux-pro-kontext")
+    images = invoke_fal_image_edit_sync(
+        spec,
+        prompt="Turn the cat into a tiger.",
+        input_image_ref="https://storage.googleapis.com/falserverless/example_inputs/edit_image_input_1.jpg",
+        product_name="_live_test",
         aspect_ratio="1:1",
         num_variants=1,
     )

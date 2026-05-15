@@ -12,7 +12,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from shared_tools.fal_adapter import FAL_T2I_CATALOG
+from shared_tools.fal_adapter import FAL_I2I_CATALOG, FAL_T2I_CATALOG
 from shared_tools.openai_client_utils import get_caller_openai_credentials
 
 
@@ -69,6 +69,12 @@ def image_model_availability_message(tool=None, *, failed_requirement: str | Non
     lines.append(f"Via FAL.AI (T2I, {fal_status} — requires FAL_KEY add-on):")
     for spec in FAL_T2I_CATALOG.values():
         lines.append(f"- {spec.user_id} ({spec.cost_tier}): {spec.description}")
+
+    if FAL_I2I_CATALOG:
+        lines.append("")
+        lines.append(f"Via FAL.AI (I2I image-edit, {fal_status} — requires FAL_KEY add-on, EditImages only):")
+        for spec in FAL_I2I_CATALOG.values():
+            lines.append(f"- {spec.user_id} ({spec.cost_tier}): {spec.description}")
 
     lines.extend(
         [
