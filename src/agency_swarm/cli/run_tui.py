@@ -125,8 +125,14 @@ def resolve_entrypoint(file_arg: str | None) -> Path:
 
 
 def run_tui(file_arg: str | None) -> None:
-    """Discover an Agency from *file_arg* (or cwd defaults) and call .tui()."""
+    """Discover an Agency from *file_arg* (or cwd defaults) and call .tui().
+
+    Hot reload is disabled when launching through the CLI because the reload
+    mechanism relies on re-running the caller script directly, which does not
+    work when the entry point is the agency-swarm binary rather than the
+    user's agency.py.
+    """
     path = resolve_entrypoint(file_arg)
     module = load_module(path)
     agency = find_agency(module, path)
-    agency.tui()
+    agency.tui(reload=False)
