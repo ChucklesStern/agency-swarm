@@ -148,6 +148,47 @@ agency-swarm init minimal
 directory, the command aborts with the conflict list. Pick a fresh
 directory or move the existing files out of the way before re-running.
 
+#### Known issue: TUI bootstrap in fresh project dirs
+
+The scaffold step (file copy + onboarding wizard + `.env` write) works in
+isolation. The subsequent TUI launch can fail in a *fresh* project directory
+with:
+
+```
+ImportError: IPythonInterpreter requires jupyter packages.
+Install them with: pip install agency-swarm[jupyter]
+```
+
+This is an upstream issue, not in the scaffold itself:
+
+1. The `agentswarm-cli` Node TUI (v1.4.24) bootstraps its own project Python
+   venv and hardcodes `pip install agency-swarm[fastapi,litellm]` — without
+   the `[jupyter]` extra.
+2. Upstream `agency-swarm` on PyPI imports `jupyter_client` at the top of
+   `agency_swarm/tools/built_in/IPythonInterpreter.py`. With no `[jupyter]`
+   installed, importing the module crashes — and the Node TUI imports it
+   during tool discovery.
+
+Tracked upstream:
+- `VRSEN/agency-swarm`: defer the jupyter import in `IPythonInterpreter.py`.
+- `VRSEN/agentswarm-cli`: add `[jupyter]` to the bootstrap install string.
+
+**Temporary workaround** until either upstream fix lands — pre-create the
+project venv with `[jupyter]` before running the scaffold:
+
+```bash
+cd my-empty-dir
+python3.12 -m venv .venv
+.venv/bin/pip install "agency-swarm[fastapi,litellm,jupyter]"
+agency-swarm init openswarm
+```
+
+The Node TUI will reuse the existing `.venv` instead of creating a fresh one,
+and `[jupyter]` lets `IPythonInterpreter.py` import. Note: depending on which
+agents you exercise, you may also need additional runtime deps (`composio`,
+`fal-client`, `pandas`, etc.) in that `.venv` — the OpenSwarm
+`requirements.txt` is the canonical list.
+
 ---
 
 ### Building a real agency
