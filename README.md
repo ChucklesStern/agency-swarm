@@ -53,6 +53,12 @@ uv tool install --editable .
 pip install -e .
 ```
 
+> **OpenSwarm starter (optional):** for the full multi-agent OpenSwarm
+> scaffold (`agency-swarm init openswarm`), install with the extras:
+> `pip install "agency-swarm-custom[openswarm]"` (or from a clone:
+> `pip install ".[openswarm]"`). Bare `agency-swarm` does not require
+> these extras.
+
 > **Note:** Python 3.12+ is required. On macOS, if `pip` is not found, use `python3 -m pip install -e .` instead.
 
 > **v1.x note:** The framework targets the OpenAI Agents SDK + Responses API.
@@ -109,6 +115,38 @@ Use the explicit `tui` subcommand when you want to fail loudly if no entrypoint 
 agency-swarm tui                          # uses ./agency.py or ./run.py; errors if neither exists
 agency-swarm tui path/to/my_agency.py     # explicit path
 ```
+
+### Optional: OpenSwarm starter
+
+If you'd rather start with the full [OpenSwarm](https://github.com/VRSEN/OpenSwarm)
+multi-agent system (orchestrator plus seven specialist agents for research,
+documents, slides, data analysis, image and video generation), install the
+extras and run:
+
+```bash
+pip install "agency-swarm-custom[openswarm]"
+agency-swarm init openswarm
+```
+
+This scaffolds the full agency into your current directory, runs an
+interactive setup wizard (provider key plus optional add-ons like SearchAPI,
+Composio, fal.ai, Google Gemini), and opens the TUI. The OpenSwarm code is
+bundled under MIT with attribution in `OPENSWARM_LICENSE` and
+`OPENSWARM_NOTICE.md` (both written into your project directory by the
+scaffold).
+
+OpenSwarm is an **optional advanced starter**, not the default. Bare
+`agency-swarm` keeps the lean one-Assistant scaffold. To scaffold the
+minimal one explicitly (same as bare `agency-swarm`), use:
+
+```bash
+agency-swarm init minimal
+```
+
+`agency-swarm init openswarm` refuses to overwrite an existing project — if
+`agency.py` or any of the OpenSwarm files already live in your current
+directory, the command aborts with the conflict list. Pick a fresh
+directory or move the existing files out of the way before re-running.
 
 ---
 
