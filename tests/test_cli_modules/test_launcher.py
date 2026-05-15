@@ -188,6 +188,8 @@ def test_iter_openswarm_manifest_renames_swarm_py_and_skips_notice() -> None:
     assert "NOTICE.md" not in dest_names  # developer-facing manifest stays in package
     assert "OPENSWARM_NOTICE.md" in dest_names  # user-facing attribution comes along
     assert "OPENSWARM_LICENSE" in dest_names
+    # requirements.txt is the override hook for the Node TUI's project-venv bootstrap.
+    assert "requirements.txt" in dest_names
     assert any(str(rel).startswith("orchestrator/") for rel in dests)
     assert any(str(rel).startswith("patches/") for rel in dests)
 
@@ -317,6 +319,12 @@ def test_scaffold_openswarm_copies_tree_and_renames_swarm_py(
     assert (tmp_path / "shared_instructions.md").is_file()
     assert (tmp_path / "OPENSWARM_LICENSE").is_file()
     assert (tmp_path / "OPENSWARM_NOTICE.md").is_file()
+    # requirements.txt is the Node TUI's project-venv bootstrap override hook;
+    # see NOTICE.md for the binary-line reference.
+    assert (tmp_path / "requirements.txt").is_file()
+    assert (
+        (tmp_path / "requirements.txt").read_text(encoding="utf-8").startswith("agency-swarm[fastapi,jupyter,litellm]")
+    )
     # Developer-facing manifest does NOT end up in user cwd.
     assert not (tmp_path / "NOTICE.md").exists()
     # TUI was launched.

@@ -16,6 +16,7 @@ onboard.py
 helpers.py
 config.py
 shared_instructions.md
+requirements.txt
 LICENSE              -> OPENSWARM_LICENSE
 orchestrator/**
 virtual_assistant/**
@@ -29,6 +30,33 @@ shared_tools/**
 patches/**
 ```
 
+### Why `requirements.txt` is intentionally included
+
+The `requirements.txt` is **intentionally part of the scaffold**, not an
+oversight. It lands in the user's cwd alongside `agency.py` and the agent
+packages, where it acts as the supported override hook for the
+`agentswarm-cli` Node TUI's project-venv bootstrap.
+
+Concretely, inspecting the cached Node TUI binary (`agentswarm-cli` v1.4.24,
+strings dump at line 678590) shows `installProjectDependencies(directory,
+python)` is a three-level fallback ladder:
+
+1. If `{cwd}/requirements.txt` exists → `pip install --upgrade -r requirements.txt`
+2. Else if `{cwd}/pyproject.toml` exists → `pip install --upgrade -e .`
+3. Else → hardcoded `pip install agency-swarm[fastapi,litellm]>=1.9.1`
+
+Branch 3 lacks `[jupyter]`, which means importing
+`agency_swarm.tools.built_in.IPythonInterpreter` (which has a module-level
+`from jupyter_client import …`) crashes the TUI's project server at startup.
+The upstream OpenSwarm `requirements.txt` starts with
+`agency-swarm[fastapi,jupyter,litellm]>=1.9.7` and includes every
+OpenSwarm-runtime dep (composio, fal-client, pandas, …). Shipping it in the
+scaffold forces the TUI down branch 1 instead.
+
+**Future maintainers: do not move this back to the "skipped" list.** Doing so
+re-introduces the IPythonInterpreter crash in fresh-directory `init
+openswarm` runs.
+
 ## Files deliberately skipped
 
 ```
@@ -41,7 +69,7 @@ bin/, Dockerfile, docker-compose.yml
 node_modules/, package.json, package-lock.json
 .playwright-browsers/, assets/
 .claude/, .cursor/, .github/
-requirements*.txt, pyproject.toml
+requirements-dev.txt, pyproject.toml
 AGENTS.md, CLAUDE.md, README.md, RELEASE.md
 ```
 

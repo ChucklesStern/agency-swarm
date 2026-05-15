@@ -148,46 +148,38 @@ agency-swarm init minimal
 directory, the command aborts with the conflict list. Pick a fresh
 directory or move the existing files out of the way before re-running.
 
-#### Known issue: TUI bootstrap in fresh project dirs
+#### How TUI launch works (two environments)
 
-The scaffold step (file copy + onboarding wizard + `.env` write) works in
-isolation. The subsequent TUI launch can fail in a *fresh* project directory
-with:
+OpenSwarm has two Python environments in play, and it's useful to understand
+both:
 
-```
-ImportError: IPythonInterpreter requires jupyter packages.
-Install them with: pip install agency-swarm[jupyter]
-```
+1. **The launcher / tool environment** — wherever you ran
+   `pip install ".[openswarm]"` or `uv tool install ".[openswarm]"`. This is
+   the environment that hosts the `agency-swarm` command itself and runs
+   `init openswarm`. The scaffolding, the onboarding wizard, and the FastAPI
+   bridge live here.
 
-This is an upstream issue, not in the scaffold itself:
+2. **The Node TUI's project `.venv`** — a separate environment the
+   `agentswarm-cli` Node binary creates **inside your scaffolded project
+   directory** the first time the TUI launches there. It hosts
+   `launch_agency.py` and your scaffolded `agency.py` (the user-side runtime).
 
-1. The `agentswarm-cli` Node TUI (v1.4.24) bootstraps its own project Python
-   venv and hardcodes `pip install agency-swarm[fastapi,litellm]` — without
-   the `[jupyter]` extra.
-2. Upstream `agency-swarm` on PyPI imports `jupyter_client` at the top of
-   `agency_swarm/tools/built_in/IPythonInterpreter.py`. With no `[jupyter]`
-   installed, importing the module crashes — and the Node TUI imports it
-   during tool discovery.
+The scaffold ships a `requirements.txt` (alongside `agency.py`,
+`OPENSWARM_LICENSE`, etc.) so the Node TUI's bootstrap installer picks it up
+and runs `pip install --upgrade -r requirements.txt` into the project `.venv`.
+That file pins `agency-swarm[fastapi,jupyter,litellm]>=1.9.7` plus the full
+OpenSwarm runtime deps (composio, fal-client, pandas, openai-agents, …) so
+the project server can import the OpenSwarm agents cleanly.
 
-Tracked upstream:
-- `VRSEN/agency-swarm`: defer the jupyter import in `IPythonInterpreter.py`.
-- `VRSEN/agentswarm-cli`: add `[jupyter]` to the bootstrap install string.
+**Heads up: this install is heavy** — several hundred MB and 5–10 minutes
+on first launch in any given scaffolded project. The `.venv` is reused on
+subsequent launches in the same directory, so the cost is once per project,
+not once per session. It is **separate from** and **in addition to** the
+`[openswarm]` install in your launcher environment; both must complete
+before the TUI is usable.
 
-**Temporary workaround** until either upstream fix lands — pre-create the
-project venv with `[jupyter]` before running the scaffold:
-
-```bash
-cd my-empty-dir
-python3.12 -m venv .venv
-.venv/bin/pip install "agency-swarm[fastapi,litellm,jupyter]"
-agency-swarm init openswarm
-```
-
-The Node TUI will reuse the existing `.venv` instead of creating a fresh one,
-and `[jupyter]` lets `IPythonInterpreter.py` import. Note: depending on which
-agents you exercise, you may also need additional runtime deps (`composio`,
-`fal-client`, `pandas`, etc.) in that `.venv` — the OpenSwarm
-`requirements.txt` is the canonical list.
+If you re-scaffold into a brand-new directory (e.g. another `mktemp -d`),
+the Node TUI builds another fresh `.venv` there. That's the same cost again.
 
 ---
 
