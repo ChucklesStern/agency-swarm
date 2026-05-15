@@ -29,9 +29,31 @@ This framework continues the original vision of Arsenii Shatokhin (aka VRSEN) to
 
 ## Installation
 
+Clone the repository and install from source:
+
 ```bash
-pip install -U agency-swarm-custom
+git clone https://github.com/ChucklesStern/agency-swarm.git
+cd agency-swarm
 ```
+
+**With uv (recommended):**
+
+```bash
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies and make the agency-swarm command available globally
+uv sync --all-extras
+uv tool install --editable .
+```
+
+**With pip:**
+
+```bash
+pip install -e .
+```
+
+> **Note:** Python 3.12+ is required. On macOS, if `pip` is not found, use `python3 -m pip install -e .` instead.
 
 > **v1.x note:** The framework targets the OpenAI Agents SDK + Responses API.
 > Migrating from v0.x? See the [Migration Guide](https://agency-swarm.ai/migration/guide).
@@ -42,8 +64,6 @@ pip install -U agency-swarm-custom
   - **OpenAI (native):** GPT-5 family, GPT-4o, etc.
   - **Via LiteLLM (router):** Anthropic (Claude), Google (Gemini), Grok (xAI), Azure OpenAI, **OpenRouter (gateway)**, etc.
 - **OS**: macOS, Linux, Windows
-
-If you hit environment issues, see the [Installation guide](https://agency-swarm.ai/welcome/installation).
 
 ## Getting Started
 
