@@ -143,3 +143,232 @@ PR 2 introduces `FAL_I2I_CATALOG` as a separate dict keyed on the same `fal:` na
 - Multi-image FAL compositing (analogue to Gemini multi-image input) — no curated candidate yet.
 - Flux Kontext `enhance_prompt` / `guidance_scale` / `seed` — keeping FAL defaults; expose if needed.
 - Numeric pricing — intentionally not recorded. The adapter emits `"Estimated cost tier: <budget|standard|premium>. Check FAL dashboard for exact pricing."` only.
+
+## PR 3 — video catalog
+
+Verified-on date: 2026-05-15 (OpenAPI fetch + model page fetch; no smoke calls).
+
+### Conventions across all PR 3 video endpoints
+
+| Aspect | Common behavior |
+|---|---|
+| Architecture | Queue-based. `fal.subscribe(endpoint, arguments=...)` is appropriate for all endpoints. No sync_mode used. |
+| Response shape | All endpoints return `result["video"]["url"]` (a single File object, not an array). This is structurally different from the image side (`result["images"][i].url`). One video parser handles all seven backing slugs. |
+| Variant field | None of the verified video endpoints expose a `num_videos` or equivalent field. Each call produces exactly one video. Variants require parallel calls if needed. |
+| Output URL TTL | Not documented; FAL convention is "download immediately." Adapter should download before returning. |
+| Media reference contract | FAL platform convention applies: any string URL (public HTTPS or `fal.upload_file()` result) is accepted by image input fields. Not explicitly documented in schemas beyond `string` type. |
+| Sync vs queue | `fal.subscribe(...)` confirmed appropriate for all endpoints (all use `https://queue.fal.run` base). |
+
+---
+
+### `fal:kling-v3-pro-t2v` → `fal-ai/kling-video/v3/pro/text-to-video`
+
+- **Endpoint ID**: `fal-ai/kling-video/v3/pro/text-to-video`
+- **Modality**: T2V
+- **Family**: `kling_pro` (shares duration enum and AR set with the I2V variant)
+- **Cost tier**: `premium`
+- **Required**: `prompt` (string, max 2500 chars) OR `multi_prompt` (array) — exactly one must be provided; prompt is the normal path.
+- **Duration enum**: `"3"`, `"4"`, `"5"`, `"6"`, `"7"`, `"8"`, `"9"`, `"10"`, `"11"`, `"12"`, `"13"`, `"14"`, `"15"` (seconds as strings). Default `"5"`. Finest-grained duration control in the catalog.
+- **Resolution / size enum**: None — no resolution field. Output resolution is model-determined.
+- **Aspect ratio enum**: `"16:9"`, `"9:16"`, `"1:1"`. Default `"16:9"`. Three values only (narrower than most video peers).
+- **`audio_url` input field**: Not present.
+- **First-frame ref field (I2V)**: N/A — T2V only.
+- **Last-frame / end-frame ref**: Not present on this endpoint.
+- **Variant field**: None (`num_videos` absent; one video per call).
+- **Response shape**: `result["video"]["url"]` — a single File object with `url` (string), `content_type` (`"video/mp4"`), `file_name` (string), `file_size` (integer bytes).
+- **Sync vs queue**: Queue (`fal.subscribe`). No sync_mode noted.
+- **Output URL TTL**: Not documented; download immediately.
+- **Media reference contract**: N/A (T2V; no image inputs).
+- **Other relevant fields**: `generate_audio` (boolean, default `true` — native audio generation, supports Chinese and English), `negative_prompt` (string, default `"blur, distort, and low quality"`), `cfg_scale` (float 0–1, default `0.5`), `shot_type` (`"customize"` | `"intelligent"`, default `"customize"`).
+
+---
+
+### `fal:kling-v3-pro-i2v` → `fal-ai/kling-video/v3/pro/image-to-video`
+
+- **Endpoint ID**: `fal-ai/kling-video/v3/pro/image-to-video`
+- **Modality**: I2V
+- **Family**: `kling_pro`
+- **Cost tier**: `premium`
+- **Required**: `start_image_url` (string) — the primary first-frame image. Constraints: max 10 MB, min 300 px on shortest side, max 2.5:1 aspect ratio. Note: the field name is `start_image_url`, NOT `image_url` or `first_frame_image_url`.
+- **Optional prompt**: `prompt` (string, max 2500 chars) OR `multi_prompt` (array) — prompt is optional here (image drives generation).
+- **Duration enum**: `"3"` through `"15"` (same discrete per-second strings as T2V variant). Default `"5"`.
+- **Resolution / size enum**: None.
+- **Aspect ratio enum**: **Not present** — the I2V endpoint does not accept `aspect_ratio`; output aspect ratio is derived from `start_image_url` dimensions.
+- **`audio_url` input field**: Not present.
+- **First-frame ref field**: `start_image_url` (string, required). Image constraints: max 10 MB, min 300 px, max 2.5:1 AR.
+- **Last-frame / end-frame ref**: `end_image_url` (string, optional) — Kling Pro I2V explicitly supports a concluding frame image. This is a differentiator from most peers.
+- **Variant field**: None.
+- **Response shape**: `result["video"]["url"]` (same File object as T2V).
+- **Sync vs queue**: Queue (`fal.subscribe`).
+- **Output URL TTL**: Not documented; download immediately.
+- **Media reference contract**: `start_image_url` and `end_image_url` accept any string URL per FAL platform convention.
+- **Other relevant fields**: `generate_audio` (boolean, default `true`), `negative_prompt` (string), `cfg_scale` (float 0–2, default `0.5`), `shot_type` (`"customize"` | `"intelligent"`), `elements` (array — character/object reference images for consistency).
+
+---
+
+### `fal:hailuo-02-standard-t2v` → `fal-ai/minimax/hailuo-02/standard/text-to-video`
+
+- **Endpoint ID**: `fal-ai/minimax/hailuo-02/standard/text-to-video`
+- **Modality**: T2V
+- **Family**: `hailuo` (shares response shape with Pro I2V variant)
+- **Cost tier**: `budget`
+- **Required**: `prompt` (string, 1–2000 chars).
+- **Duration enum**: `"6"`, `"10"` (seconds as strings). Default `"6"`. Only two options — simplest duration surface in the catalog.
+- **Resolution / size enum**: Fixed at `768p` (not user-configurable; no resolution field in schema).
+- **Aspect ratio enum**: Not present — no aspect_ratio field in schema. Output aspect ratio is model-determined.
+- **`audio_url` input field**: Not present.
+- **First-frame ref field**: N/A — T2V only.
+- **Last-frame / end-frame ref**: Not present.
+- **Variant field**: None.
+- **Response shape**: `result["video"]["url"]` (File object with optional `file_name`, `content_type`, `file_size`).
+- **Sync vs queue**: Queue (`fal.subscribe`).
+- **Output URL TTL**: Not documented; download immediately.
+- **Media reference contract**: N/A (T2V).
+- **Other relevant fields**: `prompt_optimizer` (boolean, default `true` — MiniMax's automatic prompt enhancement).
+
+---
+
+### `fal:hailuo-02-pro-i2v` → `fal-ai/minimax/hailuo-02/pro/image-to-video`
+
+- **Endpoint ID**: `fal-ai/minimax/hailuo-02/pro/image-to-video`
+- **Modality**: I2V
+- **Family**: `hailuo`
+- **Cost tier**: `premium` (1080p output, Pro tier — comparable positioning to Kling Pro)
+- **Required**: `prompt` (string, max 2000 chars) AND `image_url` (string) — both required.
+- **Duration enum**: Not present — no duration field in schema. Video length is model-determined.
+- **Resolution / size enum**: Fixed at `1080p` (not user-configurable; no resolution field).
+- **Aspect ratio enum**: Not present — no aspect_ratio field. Output AR is derived from `image_url` dimensions.
+- **`audio_url` input field**: Not present.
+- **First-frame ref field**: `image_url` (string, required). Standard field name (matches FAL image convention, unlike Kling's `start_image_url`).
+- **Last-frame / end-frame ref**: `end_image_url` (string, optional) — endpoint supports a concluding frame image.
+- **Variant field**: None.
+- **Response shape**: `result["video"]["url"]` (File object).
+- **Sync vs queue**: Queue (`fal.subscribe`).
+- **Output URL TTL**: Not documented; download immediately.
+- **Media reference contract**: `image_url` and `end_image_url` accept any string URL per FAL platform convention.
+- **Other relevant fields**: `prompt_optimizer` (boolean, default `true`).
+
+---
+
+### `fal:luma-ray-2-t2v` → `fal-ai/luma-dream-machine/ray-2`
+
+**Slug note**: The plan candidate `fal-ai/luma-dream-machine/ray-2` is the correct canonical slug. The variant `fal-ai/luma-dream-machine/ray-2/text-to-video` returns HTTP 404 and does not exist. The bare slug is a unified T2V+I2V endpoint (image inputs are optional).
+
+- **Endpoint ID**: `fal-ai/luma-dream-machine/ray-2`
+- **Modality**: T2V (primary) — also accepts optional `image_url` / `end_image_url` for image-anchored generation; this adapter key covers the T2V use case.
+- **Family**: `luma_ray2` (unified slug; distinct from Kling/Seedance which have separate T2V and I2V slugs)
+- **Cost tier**: `standard`
+- **Required**: `prompt` (string, 3–5000 chars).
+- **Duration enum**: `"5s"`, `"9s"`. Default `"5s"`. Note: values include the `s` suffix (unlike all other video endpoints in this catalog which use bare integers or bare integer strings).
+- **Resolution / size enum**: `"540p"` (default), `"720p"`, `"1080p"`. Resolution is user-selectable with tiered cost (720p costs 2x, 1080p costs 4x relative to 540p).
+- **Aspect ratio enum**: `"16:9"` (default), `"9:16"`, `"4:3"`, `"3:4"`, `"21:9"`, `"9:21"`. Six values.
+- **`audio_url` input field**: Not present.
+- **First-frame ref field**: `image_url` (string, optional) — "Initial image to start the video from." Present on the same endpoint as T2V; the adapter for `fal:luma-ray-2-t2v` omits it.
+- **Last-frame / end-frame ref**: `end_image_url` (string, optional) — "Image to blend video conclusion with."
+- **Variant field**: None.
+- **Response shape**: `result["video"]["url"]` (File object; optional `file_name`, `content_type`, `file_size`).
+- **Sync vs queue**: Queue (`fal.subscribe`).
+- **Output URL TTL**: Not documented; download immediately.
+- **Media reference contract**: Any string URL per FAL platform convention.
+- **Other relevant fields**: `loop` (boolean, default `false` — blends end with beginning for seamless looping).
+
+---
+
+### `fal:wan-2.5-t2v` → `fal-ai/wan-25-preview/text-to-video`
+
+**Slug note**: The plan candidate `fal-ai/wan-25-preview/text-to-video` is the correct canonical slug. The alternative slugs `fal-ai/wan/v2.5/text-to-video` and similar were not verified to exist; the `wan-25-preview` slug resolves correctly.
+
+- **Endpoint ID**: `fal-ai/wan-25-preview/text-to-video`
+- **Modality**: T2V
+- **Family**: `wan` (sole Wan entry; distinct family due to audio_url support)
+- **Cost tier**: `standard`
+- **Required**: `prompt` (string, max 800 chars — shortest prompt limit in the catalog; supports Chinese and English).
+- **Duration enum**: `"5"`, `"10"` (seconds as bare integer strings). Default `"5"`.
+- **Resolution / size enum**: `"480p"`, `"720p"`, `"1080p"`. Default `"1080p"` (highest default resolution in catalog).
+- **Aspect ratio enum**: `"16:9"`, `"9:16"`, `"1:1"`. Default `"16:9"`. Three values (same set as Kling Pro T2V).
+- **`audio_url` input field**: Present and optional. Accepts WAV or MP3, 3–30 seconds, max 15 MB. Audio is truncated if it exceeds video duration; silent generation if omitted. This is the only video endpoint in the catalog with audio input support — a key differentiator confirmed by schema.
+- **First-frame ref field**: Not present — this is a T2V-only endpoint; no `image_url` field.
+- **Last-frame / end-frame ref**: Not present.
+- **Variant field**: None.
+- **Response shape**: `result["video"]["url"]`. The video File object is richer than other endpoints: includes `url`, `content_type`, `file_name`, `file_size`, plus `width`, `height`, `fps`, `duration`, `num_frames`. Also returns top-level `seed` (integer) and `actual_prompt` (string, optional — the rewritten prompt when expansion is active).
+- **Sync vs queue**: Queue (`fal.subscribe`).
+- **Output URL TTL**: Not documented; download immediately.
+- **Media reference contract**: N/A (T2V; no image inputs).
+- **Other relevant fields**: `negative_prompt` (string, max 500 chars), `enable_prompt_expansion` (boolean, default `true`), `enable_safety_checker` (boolean, default `true`), `seed` (integer, optional).
+
+---
+
+### `fal:seedance-1.5-pro` — two backing endpoints
+
+The `fal:seedance-1.5-pro` user-facing ID auto-routes between T2V and I2V based on whether `image_url` is provided. Both backing slugs are verified below.
+
+#### Backing endpoint A: `fal-ai/bytedance/seedance/v1.5/pro/text-to-video`
+
+- **Endpoint ID**: `fal-ai/bytedance/seedance/v1.5/pro/text-to-video`
+- **Modality**: T2V
+- **Family**: `seedance`
+- **Cost tier**: `standard`
+- **Required**: `prompt` (string).
+- **Duration enum**: `"4"`, `"5"`, `"6"`, `"7"`, `"8"`, `"9"`, `"10"`, `"11"`, `"12"` (seconds as strings). Default `"5"`. Nine discrete values.
+- **Resolution / size enum**: `"480p"`, `"720p"`, `"1080p"`. Default `"720p"`.
+- **Aspect ratio enum**: `"21:9"`, `"16:9"`, `"4:3"`, `"1:1"`, `"3:4"`, `"9:16"`, `"auto"`. Default `"16:9"`. Widest AR support among video endpoints; includes `"auto"`.
+- **`audio_url` input field**: Not present.
+- **First-frame ref field**: N/A (T2V).
+- **Last-frame / end-frame ref**: Not present.
+- **Variant field**: None.
+- **Response shape**: `result["video"]["url"]` (File object). Also returns top-level `seed` (integer).
+- **Sync vs queue**: Queue (`fal.subscribe`).
+- **Output URL TTL**: Not documented; download immediately.
+- **Media reference contract**: N/A (T2V).
+- **Other relevant fields**: `camera_fixed` (boolean, default `false` — lock camera position), `seed` (integer, optional), `generate_audio` (boolean, default `true`), `enable_safety_checker` (boolean, default `true`).
+
+#### Backing endpoint B: `fal-ai/bytedance/seedance/v1.5/pro/image-to-video`
+
+- **Endpoint ID**: `fal-ai/bytedance/seedance/v1.5/pro/image-to-video`
+- **Modality**: I2V
+- **Family**: `seedance`
+- **Cost tier**: `standard`
+- **Required**: `prompt` (string) AND `image_url` (string) — both required. Field name is `image_url` (consistent with Hailuo Pro I2V; differs from Kling's `start_image_url`).
+- **Duration enum**: `"4"` through `"12"` — same nine discrete values as T2V variant. Default `"5"`.
+- **Resolution / size enum**: `"480p"`, `"720p"`, `"1080p"`. Default `"720p"`. Same as T2V.
+- **Aspect ratio enum**: `"21:9"`, `"16:9"`, `"4:3"`, `"1:1"`, `"3:4"`, `"9:16"`, `"auto"`. Default `"16:9"`. Same set as T2V — unusual: most I2V endpoints omit AR (deriving it from the image).
+- **`audio_url` input field**: Not present.
+- **First-frame ref field**: `image_url` (string, required).
+- **Last-frame / end-frame ref**: `end_image_url` (string, optional) — "The URL of the image the video ends with."
+- **Variant field**: None.
+- **Response shape**: `result["video"]["url"]` (File object). Also returns top-level `seed` (integer).
+- **Sync vs queue**: Queue (`fal.subscribe`).
+- **Output URL TTL**: Not documented; download immediately.
+- **Media reference contract**: `image_url` and `end_image_url` accept any string URL per FAL platform convention.
+- **Other relevant fields**: `camera_fixed` (boolean, default `false`), `seed` (integer), `generate_audio` (boolean, default `true`), `enable_safety_checker` (boolean, default `true`).
+
+---
+
+## PR 3 — adapter family grouping
+
+Based on verified schemas, the video catalog needs **three** distinct request-builder families plus routing logic for the dual-slug Seedance case:
+
+1. **`kling_pro` family** (T2V and I2V variants) — distinct because: (a) I2V uses `start_image_url` (not `image_url`), (b) no `aspect_ratio` on I2V, (c) supports `end_image_url` and `elements`, (d) per-second duration enum `"3"`–`"15"`.
+
+2. **`hailuo` family** (Standard T2V and Pro I2V) — distinct because: (a) fixed resolution (not user-configurable), (b) no `aspect_ratio` field, (c) no `duration` on I2V variant, (d) Pro I2V uses `image_url` (standard name). Standard T2V is the only `budget`-tier video endpoint.
+
+3. **`standard_video` family** (Luma Ray 2, Wan 2.5, Seedance T2V + I2V) — share the same response shape and broadly similar field names. Sub-differences handled by per-entry field maps:
+   - Luma Ray 2: duration values include `s` suffix (`"5s"`, `"9s"`); unified slug for T2V+I2V.
+   - Wan 2.5: only endpoint with `audio_url`; richest response metadata (fps, width, height, num_frames).
+   - Seedance: dual-slug routing on `image_url` presence; AR field present on both T2V and I2V (unlike peers); `camera_fixed` field.
+
+One response parser handles all video endpoints: `result["video"]["url"]`.
+
+## PR 3 — cost tier mapping (verified against schema positioning)
+
+| User-facing ID | Backing endpoint(s) | Cost tier | Basis |
+|---|---|---|---|
+| `fal:hailuo-02-standard-t2v` | `fal-ai/minimax/hailuo-02/standard/text-to-video` | `budget` | Standard tier, 768p fixed output, limited duration options |
+| `fal:luma-ray-2-t2v` | `fal-ai/luma-dream-machine/ray-2` | `standard` | Tiered resolution (default 540p), mid-range positioning |
+| `fal:wan-2.5-t2v` | `fal-ai/wan-25-preview/text-to-video` | `standard` | Preview tier, 1080p default, audio differentiator |
+| `fal:seedance-1.5-pro` | `fal-ai/bytedance/seedance/v1.5/pro/*` | `standard` | Pro tier but ByteDance preview pricing |
+| `fal:kling-v3-pro-t2v` | `fal-ai/kling-video/v3/pro/text-to-video` | `premium` | Kling Pro; finest-grained duration control; generate_audio default on |
+| `fal:kling-v3-pro-i2v` | `fal-ai/kling-video/v3/pro/image-to-video` | `premium` | Kling Pro; start_image_url + end_image_url + elements |
+| `fal:hailuo-02-pro-i2v` | `fal-ai/minimax/hailuo-02/pro/image-to-video` | `premium` | 1080p fixed output, Pro I2V tier — comparable to Kling Pro |
+
+Note: Hailuo Pro I2V is placed `premium` (matching the plan's stated mapping) because the 1080p fixed output and Pro tier designation align it with Kling Pro rather than Standard tier. This differs from Hailuo Standard (`budget`) despite sharing the same `hailuo` adapter family.

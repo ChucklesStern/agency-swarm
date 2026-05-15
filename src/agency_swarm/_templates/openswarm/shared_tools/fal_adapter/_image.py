@@ -1,4 +1,4 @@
-"""FAL.AI adapter for image generation models.
+"""FAL.AI adapter — image modality (T2I + I2I).
 
 Split into two tiers so `model_availability.py` can describe the catalog without
 importing heavy media dependencies.
@@ -6,8 +6,9 @@ importing heavy media dependencies.
 Tier A: catalog metadata only. No `fal_client`, `PIL`, `requests`, or other heavy imports.
 Tier B: actual invocation of FAL endpoints. Imports `fal_client`, `requests`, `PIL`.
 
-PR 1 ships T2I image models only. Video (PR 3), image-edit (PR 2), and the Seedance
-backward-compat alias all extend this file in later PRs.
+The umbrella `is_fal_model` predicate and the 3-catalog disjoint assertion live in
+the package's `__init__.py` so a single import surface remains correct across
+image and video modalities.
 """
 
 from __future__ import annotations
@@ -118,24 +119,6 @@ FAL_I2I_CATALOG: dict[str, FalI2ISpec] = {
     ),
 }
 
-# Sanity: a model id must never appear in both catalogs. If a future PR
-# introduces a multi-modality endpoint we will need to redesign the predicates,
-# so make the assumption explicit.
-assert not (FAL_T2I_CATALOG.keys() & FAL_I2I_CATALOG.keys()), (
-    "FAL_T2I_CATALOG and FAL_I2I_CATALOG must have disjoint keys"
-)
-
-
-def is_fal_model(model_id: str) -> bool:
-    """Return True for any model id present in the curated FAL catalogs.
-
-    This is the umbrella predicate — useful for "is this a fal: route at all?"
-    checks. Tool-side dispatch should use the modality-specific predicates
-    (`is_fal_t2i_model`, `is_fal_i2i_model`) so a T2I tool can never accidentally
-    accept an edit-only model and vice versa.
-    """
-    return model_id in FAL_T2I_CATALOG or model_id in FAL_I2I_CATALOG
-
 
 def is_fal_t2i_model(model_id: str) -> bool:
     """Return True only for keys present in `FAL_T2I_CATALOG`."""
@@ -180,15 +163,6 @@ def validate_fal_aspect_ratio(spec: FalT2ISpec | FalI2ISpec, aspect_ratio: str) 
         )
 
 
-def cost_tier_hint(spec: FalT2ISpec | FalI2ISpec) -> str:
-    """One-line cost surface for tool output.
-
-    Intentionally tier-only, never a numeric price. Numeric pricing only ships
-    when Phase 0 records a dated pricing source with a refresh commitment.
-    """
-    return f"Estimated cost tier: {spec.cost_tier}. Check FAL dashboard for exact pricing."
-
-
 # ---------------------------------------------------------------------------
 # Tier B — invocation (imports fal_client, requests, PIL)
 # ---------------------------------------------------------------------------
@@ -205,8 +179,8 @@ _TOOL_AR_TO_IMAGE_SIZE_PRESET: dict[str, str] = {
 }
 
 
-def _require_fal_key() -> str:
-    """Read FAL_KEY from env or raise with the standard availability message."""
+def _require_fal_key_for_image() -> str:
+    """Read FAL_KEY from env or raise with the standard image-availability message."""
     import os
 
     from dotenv import load_dotenv
@@ -305,7 +279,7 @@ def invoke_fal_image_sync(
     """
     import fal_client
 
-    api_key = _require_fal_key()
+    api_key = _require_fal_key_for_image()
     validate_fal_aspect_ratio(spec, aspect_ratio)
 
     fal = fal_client.SyncClient(key=api_key)
@@ -455,7 +429,7 @@ def invoke_fal_image_edit_sync(
     """
     import fal_client
 
-    api_key = _require_fal_key()
+    api_key = _require_fal_key_for_image()
     validate_fal_aspect_ratio(spec, aspect_ratio)
 
     fal = fal_client.SyncClient(key=api_key)
