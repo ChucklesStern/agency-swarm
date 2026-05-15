@@ -11,7 +11,6 @@ import pytest
 
 from agency_swarm.cli.run_tui import find_agency, load_module, resolve_entrypoint, run_tui
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -208,12 +207,12 @@ class TestLoadModule:
 
 class TestRunTui:
     def test_tui_called_exactly_once(self, tmp_path: Path) -> None:
-        """run_tui() calls .tui() exactly once on the discovered Agency."""
+        """run_tui() calls .tui(reload=False) exactly once on the discovered Agency."""
         f = _write(tmp_path, "agency.py", _agency_src("agency"))
         tui_mock = MagicMock()
         with patch("agency_swarm.agency.core.Agency.tui", tui_mock):
             run_tui(str(f))
-        tui_mock.assert_called_once_with()
+        tui_mock.assert_called_once_with(reload=False)
 
     def test_explicit_path_works(self, tmp_path: Path) -> None:
         """run_tui(explicit_path) loads that file."""

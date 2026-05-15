@@ -135,7 +135,9 @@ def main() -> None:
         if not success:
             raise SystemExit(1)
     elif args.command is None:
-        parser.print_help()
+        from .launcher import run_launcher
+
+        run_launcher()
     else:
         print(f"Unknown command: {args.command}")
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import runpy
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from agency_swarm.cli import main as cli_main
+from agency_swarm.cli import launcher as cli_launcher, main as cli_main
 
 
 def test_main_dispatches_migrate_agent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,19 +127,77 @@ def test_main_create_agent_template_exception_prints_error(
     assert "ERROR: boom" in capsys.readouterr().err
 
 
-def test_main_without_command_prints_help(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_no_args_dispatches_to_run_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bare `agency-swarm` invokes the no-subcommand launcher and skips argparse's help."""
+    calls: list[str] = []
+
+    def fake_run_launcher() -> None:
+        calls.append("launcher")
+
+    monkeypatch.setattr(cli_launcher, "run_launcher", fake_run_launcher)
+
+    def fail_if_called(_self: argparse.ArgumentParser) -> None:
+        raise AssertionError("parser.print_help should not be called when no subcommand is given")
+
+    monkeypatch.setattr(argparse.ArgumentParser, "print_help", fail_if_called)
     monkeypatch.setattr(sys, "argv", ["agency-swarm"])
 
     cli_main.main()
 
-    output = capsys.readouterr().out
-    assert "Agency Swarm CLI tools" in output
-    assert "create-agent-template" in output
+    assert calls == ["launcher"]
 
 
-def test_main_unknown_command_falls_back_to_message(
+def test_main_help_flag_does_not_call_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agency-swarm --help` short-circuits in argparse before our dispatch runs."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "run_launcher", lambda: called.append("launcher"))
+    monkeypatch.setattr(sys, "argv", ["agency-swarm", "--help"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main.main()
+
+    assert exc_info.value.code == 0
+    assert called == []
+
+
+def test_main_short_help_flag_does_not_call_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agency-swarm -h` short-circuits in argparse before our dispatch runs."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "run_launcher", lambda: called.append("launcher"))
+    monkeypatch.setattr(sys, "argv", ["agency-swarm", "-h"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main.main()
+
+    assert exc_info.value.code == 0
+    assert called == []
+
+
+def test_main_unknown_command_does_not_call_launcher_and_does_not_scaffold(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An invalid subcommand makes argparse exit; the launcher is not called and no file is written."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "run_launcher", lambda: called.append("launcher"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["agency-swarm", "not-a-real-command"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main.main()
+
+    # argparse exits with code 2 for invalid arguments
+    assert exc_info.value.code == 2
+    assert called == []
+    assert not (tmp_path / "agency.py").exists()
+
+
+def test_main_internal_else_branch_handles_unknown_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The internal `else` branch in main() prints a fallback message if dispatch sees an unknown command.
+
+    This bypasses argparse to exercise the dispatch fallback directly (defensive code path).
+    """
     monkeypatch.setattr(
         argparse.ArgumentParser,
         "parse_args",
@@ -150,10 +209,32 @@ def test_main_unknown_command_falls_back_to_message(
     assert "Unknown command: custom-command" in capsys.readouterr().out
 
 
-def test_module_entrypoint_executes_main(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_tui_subcommand_does_not_call_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agency-swarm tui` routes to run_tui directly, not through the no-arg launcher."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "run_launcher", lambda: called.append("launcher"))
+
+    run_tui_calls: list[str | None] = []
+
+    def fake_run_tui(file_arg: str | None) -> None:
+        run_tui_calls.append(file_arg)
+
+    monkeypatch.setattr(cli_main, "run_tui", fake_run_tui)
+    monkeypatch.setattr(sys, "argv", ["agency-swarm", "tui"])
+
+    cli_main.main()
+
+    assert called == []
+    assert run_tui_calls == [None]
+
+
+def test_module_entrypoint_executes_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Running `python -m agency_swarm.cli.main` with no args invokes the launcher."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "run_launcher", lambda: called.append("launcher"))
     monkeypatch.setattr(sys, "argv", ["agency-swarm"])
     monkeypatch.delitem(sys.modules, "agency_swarm.cli.main", raising=False)
 
     runpy.run_module("agency_swarm.cli.main", run_name="__main__")
 
-    assert "Agency Swarm CLI tools" in capsys.readouterr().out
+    assert called == ["launcher"]

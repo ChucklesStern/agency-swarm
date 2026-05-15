@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from agency_swarm import Agency
 
 # Conventional entry-point filenames searched in order when no FILE is given.
-_DEFAULT_FILES = ("agency.py", "run.py")
+DEFAULT_ENTRYPOINT_FILES: tuple[str, ...] = ("agency.py", "run.py")
 
 
 def load_module(file_path: Path) -> ModuleType:
@@ -47,7 +47,7 @@ def load_module(file_path: Path) -> ModuleType:
     return module
 
 
-def find_agency(module: ModuleType, source_path: Path) -> "Agency":
+def find_agency(module: ModuleType, source_path: Path) -> Agency:
     """Discover an Agency instance inside *module* using a deterministic priority order.
 
     Discovery order:
@@ -66,20 +66,14 @@ def find_agency(module: ModuleType, source_path: Path) -> "Agency":
     if callable(factory):
         result = factory()
         if not isinstance(result, Agency):
-            raise SystemExit(
-                f"create_agency() in {label} must return an Agency instance, "
-                f"got {type(result).__name__}."
-            )
+            raise SystemExit(f"create_agency() in {label} must return an Agency instance, got {type(result).__name__}.")
         return result
 
     # 2. Conventional global name
     named = getattr(module, "agency", None)
     if named is not None:
         if not isinstance(named, Agency):
-            raise SystemExit(
-                f"Global 'agency' in {label} is not an Agency instance "
-                f"(got {type(named).__name__})."
-            )
+            raise SystemExit(f"Global 'agency' in {label} is not an Agency instance (got {type(named).__name__}).")
         return named
 
     # 3. Scan for exactly one instance
@@ -101,7 +95,7 @@ def resolve_entrypoint(file_arg: str | None) -> Path:
     """Return the resolved Path to the entrypoint file.
 
     If *file_arg* is given, that path must exist.
-    Otherwise, search for the first matching name in _DEFAULT_FILES under cwd.
+    Otherwise, search for the first matching name in DEFAULT_ENTRYPOINT_FILES under cwd.
     Raises SystemExit with a clear message if nothing is found.
     """
     if file_arg is not None:
@@ -111,12 +105,12 @@ def resolve_entrypoint(file_arg: str | None) -> Path:
         return path
 
     cwd = Path.cwd()
-    for name in _DEFAULT_FILES:
+    for name in DEFAULT_ENTRYPOINT_FILES:
         candidate = cwd / name
         if candidate.exists():
             return candidate
 
-    searched = ", ".join(_DEFAULT_FILES)
+    searched = ", ".join(DEFAULT_ENTRYPOINT_FILES)
     raise SystemExit(
         f"No entrypoint file found in {cwd}. "
         f"Searched: {searched}. "
