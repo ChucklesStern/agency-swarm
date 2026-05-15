@@ -111,9 +111,35 @@ Based on the verified schemas, three request-building families are sufficient fo
 
 One response parser handles all (every endpoint returns `result["images"][i].url`).
 
-## Out of scope for PR 1 — recorded for later
+## PR 2 — image-to-image (edit) entry
 
-- `fal:flux-pro-kontext` (image edit) — PR 2 will add its own verification entry.
-- Recraft `style`/`colors`/`style_id` parameter wiring — leave defaults for PR 1; expose if real demand surfaces.
+### `fal:flux-pro-kontext` → `fal-ai/flux-pro/kontext`
+
+Verified-on date: 2026-05-15 (OpenAPI fetch).
+
+- **Endpoint ID**: `fal-ai/flux-pro/kontext`
+- **Modality**: I2I (instruction-driven edit of an input image)
+- **Family**: `flux_kontext`
+- **Cost tier**: `premium` (Flux Pro family — same tier as `fal:flux-1.1-pro-ultra`; the adapter rejects `num_variants > 1`)
+- **Required**: `prompt` (string) AND `image_url` (string, min length 1) — the edit instruction plus the image to edit.
+- **AR field**: `aspect_ratio` (string, nullable). Enum: `"21:9"`, `"16:9"`, `"4:3"`, `"3:2"`, `"1:1"`, `"2:3"`, `"3:4"`, `"9:16"`, `"9:21"`. Default: null (the model preserves the input's aspect ratio when unset).
+- **Variant field**: `num_images` (1-4, default 1). Adapter caps at 1 via premium guard.
+- **Other relevant fields**: `output_format` (`"jpeg"` or `"png"`, default `"jpeg"`), `safety_tolerance` (`"1"`-`"6"`, default `"2"`), `enhance_prompt` (default `false`), `guidance_scale` (1-20, default 3.5), `seed`. The adapter sends only `prompt`, `image_url`, `aspect_ratio`, and `num_images`; other params keep their FAL-side defaults.
+- **Response**: `result["images"][i].url` (each entry also has optional `width`, `height`, `content_type`, `file_size`, `file_name`). Also `seed`, `prompt` (echoed), `has_nsfw_concepts`, `timings`.
+- **Architecture**: Queue-based with `sync_mode` available. The adapter always uses the queue path via `fal.subscribe`, never `sync_mode`, matching every other endpoint in the catalog.
+- **Media reference contract for `image_url`**: Not explicitly documented in the schema beyond `string, minLength: 1`. The FAL platform convention — confirmed by the existing Pixelcut and Seedance I2V paths in this codebase — accepts any string URL: public HTTPS or `fal.upload_file()` result. The adapter resolves user input (URL passthrough, absolute local path → `fal.upload_file`, generated-image-name lookup) into a single URL before calling `fal.subscribe`.
+- **Output URL TTL/expiry**: Not specified. Adapter downloads immediately (matches every other endpoint).
+- **Adapter AR mapping (tool → FAL)**: passthrough where supported. The tool's Literal includes `"4:5"` and `"5:4"`, which Flux Kontext does NOT accept — the adapter rejects those values for this spec.
+- **supported_aspect_ratios** (in adapter): `frozenset({"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"})` (same set as Flux Pro Ultra).
+
+### PR 2 catalog placement
+
+PR 2 introduces `FAL_I2I_CATALOG` as a separate dict keyed on the same `fal:` namespace as `FAL_T2I_CATALOG`, with disjoint keys. `is_fal_model` becomes an umbrella check across both; tool-specific dispatch uses `is_fal_t2i_model` / `is_fal_i2i_model` to route to the correct invocation helper. `GenerateImages.model` Literal stays unchanged (Flux Kontext is structurally rejected by Pydantic). `EditImages.model` Literal gains `fal:flux-pro-kontext`.
+
+## Out of scope for this round — recorded for later
+
+- Recraft `style`/`colors`/`style_id` parameter wiring — leave defaults; expose if real demand surfaces.
 - Custom `{width, height}` image-size objects — not exposed (the tool's AR Literal is enough for the curated catalog).
+- Multi-image FAL compositing (analogue to Gemini multi-image input) — no curated candidate yet.
+- Flux Kontext `enhance_prompt` / `guidance_scale` / `seed` — keeping FAL defaults; expose if needed.
 - Numeric pricing — intentionally not recorded. The adapter emits `"Estimated cost tier: <budget|standard|premium>. Check FAL dashboard for exact pricing."` only.
