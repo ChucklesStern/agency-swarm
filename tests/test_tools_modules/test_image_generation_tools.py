@@ -11,10 +11,12 @@ from typing import get_args
 from unittest.mock import MagicMock
 
 import pytest
-from PIL import Image
-from pydantic import ValidationError
 
 pytest.importorskip("fal_client")
+pytest.importorskip("PIL")
+
+from PIL import Image  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from image_generation_agent.tools.EditImages import EditImages  # noqa: E402
 from image_generation_agent.tools.GenerateImages import GenerateImages  # noqa: E402
