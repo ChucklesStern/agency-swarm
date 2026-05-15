@@ -1,9 +1,17 @@
-"""First-boot launcher for `agency-swarm` invoked without a subcommand.
+"""Launcher and template-init logic for the `agency-swarm` CLI.
 
-If neither ``agency.py`` nor ``run.py`` exists in the current directory, a
-quick-start ``agency.py`` is written so the TUI has something to load. The
-side effect is announced on stdout. Discovery and TUI launch are then
-delegated to :func:`agency_swarm.cli.run_tui.run_tui`, which is unchanged.
+Three entry points:
+
+- :func:`run_launcher` — bare ``agency-swarm`` invocation. If no entrypoint
+  exists in cwd, scaffold the one-Assistant starter and open the TUI.
+- :func:`init_minimal` — explicit form of bare invocation, dispatched by
+  ``agency-swarm init minimal``. Same behavior as :func:`run_launcher`.
+- :func:`init_openswarm` — ``agency-swarm init openswarm``. Vendored
+  scaffold + onboarding wizard + TUI. Implemented in a later phase;
+  currently raises :class:`NotImplementedError`.
+
+TUI launch is delegated to :func:`agency_swarm.cli.run_tui.run_tui` in all
+cases.
 """
 
 from __future__ import annotations
@@ -24,8 +32,8 @@ agency = Agency(assistant)
 """
 
 
-def _ensure_agency_file(cwd: Path) -> None:
-    """Write a starter ``agency.py`` to *cwd* if no conventional entrypoint exists.
+def _ensure_minimal_agency(cwd: Path) -> None:
+    """Write the one-Assistant starter ``agency.py`` to *cwd* if no entrypoint exists.
 
     Searches for any name in :data:`DEFAULT_ENTRYPOINT_FILES`. If at least one
     exists, returns silently. Otherwise prints two stdout lines and writes
@@ -42,6 +50,20 @@ def _ensure_agency_file(cwd: Path) -> None:
 
 
 def run_launcher() -> None:
-    """First-boot launcher: ensure an entrypoint file exists, then run the TUI."""
-    _ensure_agency_file(Path.cwd())
+    """Bare-command launcher: ensure the minimal entrypoint, then run the TUI."""
+    _ensure_minimal_agency(Path.cwd())
     run_tui(None)
+
+
+def init_minimal() -> None:
+    """Explicit form of :func:`run_launcher`, dispatched by `agency-swarm init minimal`."""
+    run_launcher()
+
+
+def init_openswarm() -> None:
+    """Scaffold the vendored OpenSwarm agency and launch the TUI.
+
+    Stub: implemented in the next phase. Argparse already routes here so
+    the CLI surface is stable across the rest of the rollout.
+    """
+    raise NotImplementedError("`agency-swarm init openswarm` will be implemented in the next phase.")

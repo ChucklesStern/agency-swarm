@@ -10,11 +10,11 @@ from agency_swarm.cli import launcher
 from agency_swarm.cli.run_tui import find_agency, load_module
 
 
-def test_ensure_agency_file_creates_default_when_missing_in_empty_dir(
+def test_ensure_minimal_agency_creates_default_when_missing_in_empty_dir(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Empty cwd → agency.py is created with the template body and two stdout lines print."""
-    launcher._ensure_agency_file(tmp_path)
+    launcher._ensure_minimal_agency(tmp_path)
 
     target = tmp_path / "agency.py"
     assert target.exists()
@@ -25,7 +25,7 @@ def test_ensure_agency_file_creates_default_when_missing_in_empty_dir(
     assert "Created agency.py" in out
 
 
-def test_ensure_agency_file_creates_default_when_missing_in_nonempty_dir(
+def test_ensure_minimal_agency_creates_default_when_missing_in_nonempty_dir(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Populated cwd (no entrypoint) → agency.py is still created and existing files are untouched.
@@ -39,7 +39,7 @@ def test_ensure_agency_file_creates_default_when_missing_in_nonempty_dir(
     tools_dir.mkdir()
     (tools_dir / "foo.py").write_text("x = 1\n", encoding="utf-8")
 
-    launcher._ensure_agency_file(tmp_path)
+    launcher._ensure_minimal_agency(tmp_path)
 
     target = tmp_path / "agency.py"
     assert target.exists()
@@ -54,23 +54,23 @@ def test_ensure_agency_file_creates_default_when_missing_in_nonempty_dir(
     assert "Creating ./agency.py" in out
 
 
-def test_ensure_agency_file_skips_when_agency_py_present(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_ensure_minimal_agency_skips_when_agency_py_present(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Pre-existing agency.py → file is not modified and no stdout is emitted."""
     existing = "# my custom agency\nx = 1\n"
     (tmp_path / "agency.py").write_text(existing, encoding="utf-8")
 
-    launcher._ensure_agency_file(tmp_path)
+    launcher._ensure_minimal_agency(tmp_path)
 
     assert (tmp_path / "agency.py").read_text(encoding="utf-8") == existing
     assert capsys.readouterr().out == ""
 
 
-def test_ensure_agency_file_skips_when_run_py_present(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_ensure_minimal_agency_skips_when_run_py_present(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Pre-existing run.py (no agency.py) → no agency.py is created and no stdout."""
     existing = "# my run script\n"
     (tmp_path / "run.py").write_text(existing, encoding="utf-8")
 
-    launcher._ensure_agency_file(tmp_path)
+    launcher._ensure_minimal_agency(tmp_path)
 
     assert not (tmp_path / "agency.py").exists()
     assert (tmp_path / "run.py").read_text(encoding="utf-8") == existing
@@ -107,9 +107,28 @@ def test_run_launcher_calls_ensure_then_run_tui(tmp_path: Path, monkeypatch: pyt
     def fake_run_tui(file_arg: str | None) -> None:
         calls.append(f"run_tui:{file_arg!r}")
 
-    monkeypatch.setattr(launcher, "_ensure_agency_file", fake_ensure)
+    monkeypatch.setattr(launcher, "_ensure_minimal_agency", fake_ensure)
     monkeypatch.setattr(launcher, "run_tui", fake_run_tui)
 
     launcher.run_launcher()
 
     assert calls == [f"ensure:{tmp_path}", "run_tui:None"]
+
+
+def test_init_minimal_delegates_to_run_launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agency-swarm init minimal` and bare `agency-swarm` share the same code path."""
+    monkeypatch.chdir(tmp_path)
+    calls: list[str] = []
+
+    monkeypatch.setattr(launcher, "_ensure_minimal_agency", lambda cwd: calls.append(f"ensure:{cwd}"))
+    monkeypatch.setattr(launcher, "run_tui", lambda f: calls.append(f"run_tui:{f!r}"))
+
+    launcher.init_minimal()
+
+    assert calls == [f"ensure:{tmp_path}", "run_tui:None"]
+
+
+def test_init_openswarm_stub_raises_not_implemented() -> None:
+    """The openswarm scaffold is wired into argparse but not yet implemented."""
+    with pytest.raises(NotImplementedError, match="next phase"):
+        launcher.init_openswarm()

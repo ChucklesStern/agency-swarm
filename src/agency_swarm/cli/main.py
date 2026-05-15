@@ -82,6 +82,24 @@ def main() -> None:
         help="Path to the agency entrypoint (default: ./agency.py, then ./run.py)",
     )
 
+    # init command
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Scaffold a starter agency into the current directory and launch the TUI.",
+        description=(
+            "Scaffold a starter agency template into the current directory, then "
+            "launch the TUI against it. For `openswarm`, an interactive setup "
+            "wizard runs first (provider key + optional add-ons) before the TUI "
+            "opens. To scaffold without launching, see the `tui` subcommand for "
+            "explicit-launch semantics."
+        ),
+    )
+    init_parser.add_argument(
+        "template",
+        choices=["minimal", "openswarm"],
+        help="Which starter to scaffold (then launch the TUI).",
+    )
+
     # Import tool command
     import_tool_parser = subparsers.add_parser(
         "import-tool",
@@ -109,6 +127,13 @@ def main() -> None:
 
     if args.command == "tui":
         run_tui(args.file)
+    elif args.command == "init":
+        from .launcher import init_minimal, init_openswarm
+
+        if args.template == "openswarm":
+            init_openswarm()
+        else:
+            init_minimal()
     elif args.command == "migrate-agent":
         exit_code = migrate_agent_command(args.settings_file, args.output_dir)
         sys.exit(exit_code)

@@ -228,6 +228,61 @@ def test_main_tui_subcommand_does_not_call_launcher(monkeypatch: pytest.MonkeyPa
     assert run_tui_calls == [None]
 
 
+def test_main_init_minimal_dispatches_to_init_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agency-swarm init minimal` dispatches to `init_minimal`, not the bare launcher."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "init_minimal", lambda: called.append("minimal"))
+    monkeypatch.setattr(cli_launcher, "init_openswarm", lambda: called.append("openswarm"))
+    monkeypatch.setattr(cli_launcher, "run_launcher", lambda: called.append("bare"))
+    monkeypatch.setattr(sys, "argv", ["agency-swarm", "init", "minimal"])
+
+    cli_main.main()
+
+    assert called == ["minimal"]
+
+
+def test_main_init_openswarm_dispatches_to_init_openswarm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agency-swarm init openswarm` dispatches to `init_openswarm`."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "init_minimal", lambda: called.append("minimal"))
+    monkeypatch.setattr(cli_launcher, "init_openswarm", lambda: called.append("openswarm"))
+    monkeypatch.setattr(cli_launcher, "run_launcher", lambda: called.append("bare"))
+    monkeypatch.setattr(sys, "argv", ["agency-swarm", "init", "openswarm"])
+
+    cli_main.main()
+
+    assert called == ["openswarm"]
+
+
+def test_main_init_unknown_template_fails_via_argparse(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`agency-swarm init <bogus>` is rejected by argparse before dispatch."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "init_minimal", lambda: called.append("minimal"))
+    monkeypatch.setattr(cli_launcher, "init_openswarm", lambda: called.append("openswarm"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["agency-swarm", "init", "not-a-template"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main.main()
+
+    assert exc_info.value.code == 2
+    assert called == []
+
+
+def test_main_init_without_template_fails_via_argparse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agency-swarm init` with no template choice is rejected by argparse."""
+    called: list[str] = []
+    monkeypatch.setattr(cli_launcher, "init_minimal", lambda: called.append("minimal"))
+    monkeypatch.setattr(cli_launcher, "init_openswarm", lambda: called.append("openswarm"))
+    monkeypatch.setattr(sys, "argv", ["agency-swarm", "init"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main.main()
+
+    assert exc_info.value.code == 2
+    assert called == []
+
+
 def test_module_entrypoint_executes_main(monkeypatch: pytest.MonkeyPatch) -> None:
     """Running `python -m agency_swarm.cli.main` with no args invokes the launcher."""
     called: list[str] = []
