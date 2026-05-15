@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -361,6 +362,77 @@ def test_init_openswarm_aborts_when_wizard_fails(
     assert tui_calls == []
     err = capsys.readouterr().err
     assert "Wizard did not complete" in err
+
+
+def test_run_onboarding_wizard_invokes_subprocess_with_correct_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wizard subprocess gets `[sys.executable, "onboard.py"]` with cwd=cwd."""
+    recorded: dict[str, object] = {}
+
+    def fake_run(argv, cwd, check):  # type: ignore[no-untyped-def]
+        recorded["argv"] = argv
+        recorded["cwd"] = cwd
+        recorded["check"] = check
+        # Simulate the wizard writing .env.
+        (Path(cwd) / ".env").write_text("OPENAI_API_KEY=ok\n", encoding="utf-8")
+        return None  # launcher ignores the return value; check=False keeps run() silent
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    result = launcher._run_onboarding_wizard(tmp_path)
+
+    assert result is True
+    assert recorded["argv"] == [sys.executable, "onboard.py"]
+    assert recorded["cwd"] == tmp_path
+    assert recorded["check"] is False
+
+
+def test_run_onboarding_wizard_returns_false_when_env_not_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Subprocess returns non-zero and writes no .env → wizard reported as failed."""
+
+    def fake_run(argv, cwd, check):  # type: ignore[no-untyped-def]
+        return None  # subprocess "ran" but didn't write .env
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    assert launcher._run_onboarding_wizard(tmp_path) is False
+
+
+def test_run_onboarding_wizard_swallows_keyboard_interrupt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ctrl-C during the wizard returns False instead of propagating."""
+
+    def fake_run(argv, cwd, check):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    # Should not raise — must return False since no .env was written.
+    assert launcher._run_onboarding_wizard(tmp_path) is False
+
+
+def test_init_openswarm_runs_wizard_when_env_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When `.env` is absent, init_openswarm() calls the wizard subprocess."""
+    _stub_openswarm_deps(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    wizard_invocations: list[Path] = []
+
+    def fake_run(argv, cwd, check):  # type: ignore[no-untyped-def]
+        wizard_invocations.append(Path(cwd))
+        # Simulate successful wizard completion.
+        (Path(cwd) / ".env").write_text("OPENAI_API_KEY=test\n", encoding="utf-8")
+        return None  # launcher ignores the return value; check=False keeps run() silent
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    monkeypatch.setattr(launcher, "run_tui", lambda f: None)
+
+    launcher.init_openswarm()
+
+    assert wizard_invocations == [tmp_path]
+    assert (tmp_path / ".env").is_file()
 
 
 def test_scaffolded_agency_py_is_discoverable_by_run_tui(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

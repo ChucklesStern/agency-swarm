@@ -19,6 +19,7 @@ import contextlib
 import importlib
 import importlib.resources as resources
 import shutil
+import subprocess
 import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -166,13 +167,22 @@ def _scaffold_openswarm(cwd: Path, manifest: list[tuple[Path, Path]]) -> None:
 
 
 def _run_onboarding_wizard(cwd: Path) -> bool:
-    """Run the OpenSwarm onboarding wizard.
+    """Run the OpenSwarm onboarding wizard as a subprocess.
 
-    Returns True iff a ``.env`` file is present in *cwd* after the wizard
-    completes (either pre-existing or written by the wizard).
+    Invokes ``python onboard.py`` in *cwd*. The wizard owns its own UX
+    (questionary prompts for provider, key, and add-ons) and writes a
+    ``.env`` file directly. Returns ``True`` iff that file is present
+    after the subprocess completes.
 
-    Stubbed in phase 3; wired to :mod:`subprocess` in phase 4.
+    Catches :class:`KeyboardInterrupt` so a user Ctrl-C during the wizard
+    returns ``False`` cleanly instead of unwinding through the launcher.
+    The caller is responsible for the post-condition (no TUI launch on
+    ``False``).
     """
+    try:
+        subprocess.run([sys.executable, "onboard.py"], cwd=cwd, check=False)
+    except KeyboardInterrupt:
+        return False
     return (cwd / ".env").exists()
 
 
