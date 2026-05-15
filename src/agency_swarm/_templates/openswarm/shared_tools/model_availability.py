@@ -1,4 +1,9 @@
-"""Model availability hints for tools that depend on provider add-ons."""
+"""Model availability hints for tools that depend on provider add-ons.
+
+This module is imported by tool error paths to render a "what's available right
+now" message. It must stay lightweight: it imports Tier A of `fal_adapter`
+(catalog metadata only), never Tier B (which pulls in `fal_client`, `PIL`, etc.).
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from shared_tools.fal_adapter import FAL_T2I_CATALOG
 from shared_tools.openai_client_utils import get_caller_openai_credentials
 
 
@@ -55,6 +61,17 @@ def image_model_availability_message(tool=None, *, failed_requirement: str | Non
             f"- gemini-3-pro-image-preview: {_configured(google_available())} (requires GOOGLE_API_KEY add-on)",
             f"- gpt-image-1.5: {_configured(direct_openai_available(tool))} (requires OpenAI API key auth; not Codex browser auth)",
             f"- background removal / Pixelcut: {_configured(fal_available())} (requires FAL_KEY add-on)",
+        ]
+    )
+
+    fal_status = _configured(fal_available())
+    lines.append("")
+    lines.append(f"Via FAL.AI (T2I, {fal_status} — requires FAL_KEY add-on):")
+    for spec in FAL_T2I_CATALOG.values():
+        lines.append(f"- {spec.user_id} ({spec.cost_tier}): {spec.description}")
+
+    lines.extend(
+        [
             "",
             "If the requested model is unavailable, switch to an available model above or ask the user to run /auth and add the missing add-on key.",
         ]

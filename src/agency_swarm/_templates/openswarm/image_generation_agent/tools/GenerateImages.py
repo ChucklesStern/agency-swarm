@@ -1,33 +1,39 @@
-"""Generate images with Gemini or OpenAI image models."""
-
-from typing import Literal
+"""Generate images with Gemini, OpenAI, or FAL.AI text-to-image models."""
 
 import os
-from dotenv import load_dotenv
-from openai import OpenAI
-from pydantic import Field, field_validator, model_validator
+from typing import Literal
 
-from agency_swarm import BaseTool
+from dotenv import load_dotenv
+from pydantic import Field, field_validator, model_validator
+from shared_tools.fal_adapter import (
+    cost_tier_hint,
+    get_fal_t2i_spec,
+    invoke_fal_image_sync,
+    is_fal_model,
+    validate_fal_aspect_ratio,
+)
 from shared_tools.model_availability import image_model_availability_message
 from shared_tools.openai_client_utils import get_openai_client
 
+from agency_swarm import BaseTool, ToolOutputText
+
 from .utils.image_io import (
-    get_images_dir,
-    build_variant_output_name,
-    save_image,
-    image_to_base64_jpeg,
     build_multimodal_outputs,
+    build_variant_output_name,
     extract_gemini_image_and_usage,
     extract_openai_images_and_usage,
-    run_parallel_variants_sync,
-    validate_aspect_ratio_for_model,
+    get_images_dir,
     get_openai_size_for_aspect_ratio,
+    image_to_base64_jpeg,
+    run_parallel_variants_sync,
+    save_image,
+    validate_aspect_ratio_for_model,
 )
 
 
 class GenerateImages(BaseTool):
     """
-    Generate one or more images from a prompt using Gemini or OpenAI image models.
+    Generate one or more images from a prompt using Gemini, OpenAI, or FAL.AI T2I models.
 
     Outputs are saved to: mnt/{product_name}/generated_images/
     """
@@ -41,7 +47,16 @@ class GenerateImages(BaseTool):
             "If a path is provided, the image is saved at that path."
         ),
     )
-    model: Literal["gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gpt-image-1.5"] = Field(
+    model: Literal[
+        "gemini-2.5-flash-image",
+        "gemini-3-pro-image-preview",
+        "gpt-image-1.5",
+        "fal:flux-schnell",
+        "fal:flux-1.1-pro-ultra",
+        "fal:ideogram-v3",
+        "fal:recraft-v3",
+        "fal:nano-banana-2",
+    ] = Field(
         default="gemini-2.5-flash-image",
         description="Image model to use.",
     )
@@ -67,12 +82,32 @@ class GenerateImages(BaseTool):
 
     @model_validator(mode="after")
     def _validate_model_aspect_ratio(self) -> "GenerateImages":
-        validate_aspect_ratio_for_model(self.model, self.aspect_ratio)
+        if is_fal_model(self.model):
+            validate_fal_aspect_ratio(get_fal_t2i_spec(self.model), self.aspect_ratio)
+        else:
+            validate_aspect_ratio_for_model(self.model, self.aspect_ratio)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_fal_premium_variants(self) -> "GenerateImages":
+        if is_fal_model(self.model):
+            spec = get_fal_t2i_spec(self.model)
+            if spec.cost_tier == "premium" and self.num_variants > 1:
+                raise ValueError(
+                    f"Model '{self.model}' is premium-tier; only num_variants=1 is allowed. "
+                    f"Pick a budget/standard model or run multiple separate calls."
+                )
         return self
 
     def run(self) -> list:
         load_dotenv(override=True)
         images_dir = get_images_dir(self.product_name)
+
+        if is_fal_model(self.model):
+            results, hint = self._run_fal(images_dir)
+            outputs = build_multimodal_outputs(results, "Image generation complete")
+            outputs.append(ToolOutputText(type="text", text=hint))
+            return outputs
 
         if self.model.startswith("gemini-"):
             results, usage_metadata = self._run_gemini(images_dir)
@@ -80,6 +115,31 @@ class GenerateImages(BaseTool):
 
         results, usage_metadata = self._run_openai(images_dir)
         return build_multimodal_outputs(results, "Image generation complete")
+
+    def _run_fal(self, images_dir):
+        spec = get_fal_t2i_spec(self.model)
+        pil_images = invoke_fal_image_sync(
+            spec,
+            prompt=self.prompt,
+            aspect_ratio=self.aspect_ratio,
+            num_variants=self.num_variants,
+        )
+        if not pil_images:
+            raise RuntimeError(f"FAL endpoint '{spec.endpoint}' returned no images.")
+
+        results: list[dict] = []
+        for idx, image in enumerate(pil_images, start=1):
+            variant_name = build_variant_output_name(self.file_name, idx, len(pil_images))
+            image_name, file_path = save_image(image, variant_name, images_dir)
+            results.append(
+                {
+                    "image_name": image_name,
+                    "file_path": file_path,
+                    "preview_b64": image_to_base64_jpeg(image),
+                }
+            )
+
+        return results, cost_tier_hint(spec)
 
     def _run_gemini(self, images_dir):
         from google import genai
@@ -195,4 +255,3 @@ if __name__ == "__main__":
         print(result)
     except Exception as exc:
         print(f"Image generation failed: {exc}")
-
