@@ -7,19 +7,33 @@ import asyncio
 import os
 import weakref
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from jupyter_client import AsyncKernelManager  # type: ignore[import-not-found]
 
 from pydantic import Field
 
 from agency_swarm.tools.base_tool import BaseTool
 
-# Import jupyter dependencies (will fail with clear error if not installed)
-try:
-    from jupyter_client import AsyncKernelManager  # type: ignore[import-not-found]
-except ImportError as e:
-    raise ImportError(
-        "IPythonInterpreter requires jupyter packages. Install them with: pip install agency-swarm[jupyter]"
-    ) from e
+
+def _require_async_kernel_manager() -> type:
+    """Import ``jupyter_client.AsyncKernelManager`` lazily.
+
+    Raises :class:`ImportError` with a friendly install hint if the jupyter
+    packages aren't available. Called at kernel-start time rather than at
+    module import time so that merely importing this module (which other
+    parts of the package, including external sandboxes spawned by the TUI,
+    may do for tool discovery) doesn't blow up in environments that don't
+    have the optional ``[jupyter]`` extras installed.
+    """
+    try:
+        from jupyter_client import AsyncKernelManager  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise ImportError(
+            "IPythonInterpreter requires jupyter packages. Install them with: pip install agency-swarm[jupyter]"
+        ) from e
+    return AsyncKernelManager
 
 
 # Default timeout for code execution (seconds)
@@ -53,7 +67,7 @@ class AsyncKernelSession:
         if self.km is not None:
             return
 
-        km = AsyncKernelManager(kernel_name=self.kernel_name)
+        km = _require_async_kernel_manager()(kernel_name=self.kernel_name)
         await km.start_kernel()
         kc = km.client()
         kc.start_channels()
