@@ -11,9 +11,11 @@ from io import BytesIO
 from unittest.mock import MagicMock
 
 import pytest
-from PIL import Image
 
 pytest.importorskip("fal_client")
+pytest.importorskip("PIL")
+
+from PIL import Image  # noqa: E402
 
 from shared_tools.fal_adapter import (  # noqa: E402
     FAL_T2I_CATALOG,
