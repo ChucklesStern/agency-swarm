@@ -107,6 +107,10 @@ def _iter_openswarm_manifest(root: Path) -> Iterable[tuple[Path, Path]]:
         if not source.is_file():
             continue
         rel = source.relative_to(root)
+        # Skip Python bytecode caches anywhere in the tree — these are local
+        # artifacts from imports of the vendored copy, not part of the scaffold.
+        if "__pycache__" in rel.parts:
+            continue
         if len(rel.parts) == 1 and rel.parts[0] in _OPENSWARM_SKIP_TOP_LEVEL:
             continue
         if len(rel.parts) == 1 and rel.parts[0] in _OPENSWARM_RENAMES:

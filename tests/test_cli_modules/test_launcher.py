@@ -474,9 +474,17 @@ def test_scaffolded_agency_py_is_discoverable_by_run_tui(tmp_path: Path, monkeyp
     agency_py = tmp_path / "agency.py"
     assert agency_py.is_file()
 
-    # Real load_module + find_agency — no mocks here.
+    # Real load_module + find_agency — no mocks here. The factory inside
+    # the scaffolded agency.py does lazy `from orchestrator import ...`, so
+    # tmp_path must be on sys.path when find_agency calls the factory. The
+    # real run_tui handles this via its own sys.path insert; in this test
+    # we replicate that contract directly.
     module = load_module(agency_py)
-    result = find_agency(module, agency_py)
+    sys.path.insert(0, str(tmp_path))
+    try:
+        result = find_agency(module, agency_py)
+    finally:
+        sys.path.remove(str(tmp_path))
 
     assert isinstance(result, Agency)
     assert len(result.agents) >= 8

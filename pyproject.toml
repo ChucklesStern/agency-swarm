@@ -73,6 +73,16 @@ fastapi = [
 ]
 
 openswarm = [
+    # OpenSwarm's upstream requirements.txt has
+    # `agency-swarm[fastapi,jupyter,litellm]>=1.9.7` — we mirror those extras
+    # explicitly so `[openswarm]` is self-contained against agency-swarm-custom.
+    "litellm>=1.67.4.post1, <2",
+    "ag-ui-protocol>=0.1.4",
+    "aiofiles>=23.2.1",
+    "filetype>=1.2.0",
+    "ipykernel>=6.29.0,<7.0.0",
+    "jupyter_client>=8.0.0,<9.0.0",
+    "nest_asyncio>=1.6.0,<2.0.0",
     # Mirrors openSwarm/requirements.txt minus the agency-swarm self-reference.
     "questionary>=2.0.0",
     "fastapi",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -125,8 +126,21 @@ def run_tui(file_arg: str | None) -> None:
     mechanism relies on re-running the caller script directly, which does not
     work when the entry point is the agency-swarm binary rather than the
     user's agency.py.
+
+    `parent` is re-added to ``sys.path`` *after* :func:`load_module` returns
+    (which cleans up its own temporary addition) so that agencies using the
+    ``create_agency()`` factory pattern with lazy imports inside the factory
+    (e.g. ``from orchestrator import create_orchestrator``) can still
+    resolve sibling modules at factory-call time. We remove it again after
+    the TUI returns.
     """
     path = resolve_entrypoint(file_arg)
     module = load_module(path)
-    agency = find_agency(module, path)
-    agency.tui(reload=False)
+    parent = str(path.parent.resolve())
+    sys.path.insert(0, parent)
+    try:
+        agency = find_agency(module, path)
+        agency.tui(reload=False)
+    finally:
+        with contextlib.suppress(ValueError):
+            sys.path.remove(parent)
