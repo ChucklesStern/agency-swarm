@@ -100,7 +100,7 @@ assistant = Agent(
     model="gpt-4o",
 )
 
-agency = Agency([assistant])
+agency = Agency(assistant)
 ```
 
 ### Step 3 — Launch the TUI
@@ -121,7 +121,7 @@ Or use a factory function instead of a global variable:
 
 ```python
 def create_agency() -> Agency:
-    return Agency([assistant])
+    return Agency(assistant)
 ```
 
 ---
