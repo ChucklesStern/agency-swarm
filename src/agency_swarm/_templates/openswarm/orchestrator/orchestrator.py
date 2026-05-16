@@ -3,6 +3,7 @@ from openai.types.shared import Reasoning
 from dotenv import load_dotenv
 
 from config import get_default_model, is_openai_provider
+from shared_tools import ListProjectFiles, ReadTextFile, SearchTextFiles
 
 load_dotenv()
 
@@ -19,6 +20,10 @@ def create_orchestrator() -> Agent:
         model_settings=ModelSettings(
             reasoning=Reasoning(effort="medium", summary="auto") if is_openai_provider() else None,
         ),
+        # Routing-only role plus a read-only local filesystem utility set so the
+        # orchestrator can answer trivial "read this file" / "what's in this dir"
+        # questions without bouncing through a specialist for a single read.
+        tools=[ReadTextFile, ListProjectFiles, SearchTextFiles],
         conversation_starters=[
             "What can this agency do?",
             "Build a full launch package: research, slides, docs, and creative assets.",
