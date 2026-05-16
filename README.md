@@ -29,6 +29,34 @@ This framework continues the original vision of Arsenii Shatokhin (aka VRSEN) to
 
 ## Installation
 
+### Prerequisites (macOS)
+
+Agency Swarm requires **Python 3.12+** and the `uv` package manager. If you're starting from a clean Mac, run these once before installing:
+
+```bash
+# 1. Xcode Command Line Tools (provides git, cc, make)
+xcode-select --install
+```
+
+If macOS reports the Command Line Tools are already installed, that's fine — skip to the next step.
+
+```bash
+# 2. Homebrew (skip if you already have it: https://brew.sh)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 3. Python and uv (Python 3.13 is fine; any 3.12+ works)
+brew install python@3.13 uv
+```
+
+Verify versions before continuing:
+
+```bash
+python3 --version   # 3.12 or newer
+uv --version        # any recent version
+```
+
+Linux and Windows users: install Python 3.12+ and `uv` via your platform's package manager or the [official uv installer](https://docs.astral.sh/uv/getting-started/installation/).
+
 Clone the repository and install from source:
 
 ```bash
@@ -39,27 +67,32 @@ cd agency-swarm
 **With uv (recommended):**
 
 ```bash
-# Install uv if you don't have it
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
 # Install dependencies and make the agency-swarm command available globally
 uv sync --all-extras
 uv tool install --editable .
 ```
 
+> If `agency-swarm` is reported as "command not found," run `uv tool update-shell`, close and reopen your terminal, then retry `agency-swarm --help`.
+
 **With pip:**
 
+If `pip` is not on your PATH, use `python3 -m pip` (or `python -m pip` once the venv is activated) for the steps below.
+
 ```bash
-pip install -e .
+# From the cloned repo:
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
+
+> With the pip/venv path, the `agency-swarm` command is available **only while the `.venv` is activated**. Run `source .venv/bin/activate` in each new terminal before using it.
 
 > **OpenSwarm starter (optional):** for the full multi-agent OpenSwarm
 > scaffold (`agency-swarm init openswarm`), install with the extras:
 > `pip install "agency-swarm-custom[openswarm]"` (or from a clone:
 > `pip install ".[openswarm]"`). Bare `agency-swarm` does not require
 > these extras.
-
-> **Note:** Python 3.12+ is required. On macOS, if `pip` is not found, use `python3 -m pip install -e .` instead.
 
 > **v1.x note:** The framework targets the OpenAI Agents SDK + Responses API.
 > Migrating from v0.x? See the [Migration Guide](https://agency-swarm.ai/migration/guide).
@@ -70,6 +103,14 @@ pip install -e .
   - **OpenAI (native):** GPT-5 family, GPT-4o, etc.
   - **Via LiteLLM (router):** Anthropic (Claude), Google (Gemini), Grok (xAI), Azure OpenAI, **OpenRouter (gateway)**, etc.
 - **OS**: macOS, Linux, Windows
+
+### Verify your install
+
+```bash
+agency-swarm --help
+```
+
+You should see the CLI's help banner with subcommands like `tui`, `init`, and `create-agent-template`. If you get "command not found," see the PATH note above (uv path) or re-activate your `.venv` (pip path).
 
 ## Getting Started
 
@@ -89,6 +130,15 @@ Created agency.py — edit it any time to customize your agency.
 If `agency.py` (or `run.py`) already exists, nothing is written — the launcher opens the existing entrypoint in the TUI.
 
 The TUI will guide you through any required setup, including API key configuration where supported. Once you're in, send a message and start iterating. Edit `agency.py` to customize agents, models, and communication flows.
+
+You'll need an **OpenAI API key** to talk to a model. Create one at <https://platform.openai.com/api-keys>, then save it in a `.env` file in your project directory:
+
+```bash
+# Creates a new .env in the current directory:
+printf 'OPENAI_API_KEY=sk-...\n' > .env
+```
+
+Replace `sk-...` with your real key. If a `.env` already exists, open it in an editor and add or update the `OPENAI_API_KEY` line rather than appending a duplicate. Agency Swarm loads `.env` during startup.
 
 ### What gets created
 
