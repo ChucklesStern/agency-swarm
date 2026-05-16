@@ -2,20 +2,18 @@
 
 import io
 import os
-from pathlib import Path
-from dotenv import load_dotenv
-from urllib.parse import urlparse
 
 import fal_client
 import requests
+from dotenv import load_dotenv
 from PIL import Image
 from pydantic import Field, field_validator
-
-from agency_swarm import BaseTool
+from shared_tools.fal_adapter import resolve_image_for_fal_sync
 from shared_tools.model_availability import image_model_availability_message
 
+from agency_swarm import BaseTool
+
 from .utils.image_io import (
-    find_image_path_from_name,
     get_images_dir,
     save_image,
 )
@@ -64,7 +62,7 @@ class RemoveBackground(BaseTool):
         fal = fal_client.SyncClient(key=api_key)
 
         images_dir = get_images_dir(self.product_name)
-        image_url = self._resolve_to_upload_url(images_dir, fal)
+        image_url = resolve_image_for_fal_sync(fal, self.product_name, self.input_image_ref)
         result = fal.subscribe(
             FAL_ENDPOINT,
             arguments={"image_url": image_url, "output_format": "rgba", "sync_mode": False},
@@ -78,25 +76,6 @@ class RemoveBackground(BaseTool):
         image_name, file_path = save_image(rgba_image, self.output_file_name, images_dir)
 
         return f"Background removal complete.\nImage name: {image_name}\nPath: {file_path}"
-
-    def _resolve_to_upload_url(self, images_dir: Path, fal: fal_client.SyncClient) -> str:
-        ref = self.input_image_ref.strip()
-
-        parsed = urlparse(ref)
-        if parsed.scheme in ("http", "https"):
-            return ref
-
-        candidate = Path(ref).expanduser().resolve()
-        if candidate.exists():
-            return fal.upload_file(str(candidate))
-
-        by_name = find_image_path_from_name(images_dir, ref)
-        if by_name is not None:
-            return fal.upload_file(str(by_name))
-
-        raise FileNotFoundError(
-            f"Could not resolve image reference '{ref}' as URL, path, or name in {images_dir}."
-        )
 
     def _download_rgba(self, url: str) -> Image.Image:
         response = requests.get(url, timeout=30)

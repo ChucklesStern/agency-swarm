@@ -4,18 +4,22 @@ import asyncio
 import logging
 import os
 import re
-from dotenv import load_dotenv
-import cv2
-import httpx
 from typing import Annotated, Literal, Optional, Union
 
+import cv2
 import fal_client
-from pydantic import BaseModel, Field, field_validator
+from dotenv import load_dotenv
 from google.genai import types
 from PIL import Image
+from pydantic import BaseModel, Field, field_validator
+from shared_tools.fal_adapter import (
+    download_fal_video,
+    parse_fal_video_response,
+    resolve_video_for_fal_sync,
+)
+from shared_tools.model_availability import video_model_availability_message
 
 from agency_swarm import BaseTool, ToolOutputText
-from shared_tools.model_availability import video_model_availability_message
 
 from .utils.video_utils import (
     create_image_output,
@@ -23,9 +27,9 @@ from .utils.video_utils import (
     generate_spritesheet,
     get_gemini_client,
     get_openai_client,
-    save_video_with_metadata,
-    save_veo_video_with_metadata,
     get_videos_dir,
+    save_veo_video_with_metadata,
+    save_video_with_metadata,
 )
 
 _VEO_MODEL = "veo-3.1-generate-preview"
@@ -181,24 +185,25 @@ class EditVideoContent(BaseTool):
         fal = fal_client.SyncClient(key=api_key)
 
         endpoint = self._resolve_endpoint(self.mode.action)
-        video_url = self._resolve_media_url(self.mode.video_source, fal)
+        video_url = resolve_video_for_fal_sync(fal, self.product_name, self.mode.video_source)
         arguments = {"video_url": video_url}
 
         arguments["prompt"] = self.mode.prompt
         if self.mode.reference_images:
             arguments["image_urls"] = [
-                self._resolve_media_url(ref, fal) for ref in self.mode.reference_images
+                resolve_video_for_fal_sync(fal, self.product_name, ref)
+                for ref in self.mode.reference_images
             ]
 
         result = fal.subscribe(endpoint, arguments=arguments, with_logs=True)
-        output_url = self._extract_video_url(result)
+        output_url = parse_fal_video_response(result)
 
         if not output_url:
             raise RuntimeError("fal.ai response did not include a video URL")
 
         videos_dir = get_videos_dir(self.product_name)
         output_path = os.path.join(videos_dir, f"{self.name}.mp4")
-        self._download_file(output_url, output_path)
+        download_fal_video(output_url, output_path)
 
         output = []
 
@@ -297,54 +302,6 @@ class EditVideoContent(BaseTool):
         if action == "edit":
             return "fal-ai/kling-video/o3/standard/video-to-video/edit"
         raise ValueError(f"Unsupported fal.ai action: {action}")
-
-    def _resolve_media_url(self, value: Optional[str], fal: fal_client.SyncClient) -> str:
-        if value is None:
-            raise ValueError("Media source is required")
-
-        if value.startswith("http://") or value.startswith("https://"):
-            return value
-
-        # Try as absolute/relative path first
-        path = os.path.expanduser(value)
-        if os.path.exists(path):
-            return fal.upload_file(path)
-        
-        # Try in product's generated_videos directory
-        videos_dir = get_videos_dir(self.product_name)
-        
-        # Try with common video extensions
-        for ext in [".mp4", ".mov", ".avi", ".webm"]:
-            # Try with extension
-            video_path = os.path.join(videos_dir, f"{value}{ext}")
-            if os.path.exists(video_path):
-                return fal.upload_file(video_path)
-            
-            # Try without adding extension (in case value already has one)
-            video_path = os.path.join(videos_dir, value)
-            if os.path.exists(video_path):
-                return fal.upload_file(video_path)
-        
-        raise FileNotFoundError(
-            f"Video file not found: '{value}'\n"
-            f"  Searched in: {videos_dir}\n"
-            f"  Also tried as absolute/relative path: {path}"
-        )
-
-    def _extract_video_url(self, result: dict) -> Optional[str]:
-        video_info = result.get("video")
-        if isinstance(video_info, dict):
-            return video_info.get("url")
-        return None
-
-    def _download_file(self, url: str, output_path: str) -> None:
-        with httpx.Client(timeout=120.0) as client:
-            with client.stream("GET", url) as response:
-                response.raise_for_status()
-                with open(output_path, "wb") as out_file:
-                    for chunk in response.iter_bytes():
-                        if chunk:
-                            out_file.write(chunk)
 
     def _extract_first_frame(self, video_path: str, output_path: str):
         cap = cv2.VideoCapture(video_path)

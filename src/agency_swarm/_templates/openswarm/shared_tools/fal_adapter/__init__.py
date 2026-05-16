@@ -30,9 +30,9 @@ from ._image import (
     invoke_fal_image_sync,
     is_fal_i2i_model,
     is_fal_t2i_model,
-    resolve_image_for_fal_sync,
     validate_fal_aspect_ratio,
 )
+from ._resources import resolve_image_for_fal_sync, resolve_video_for_fal_sync
 from ._video_catalog import (
     FAL_VIDEO_CATALOG,
     SEEDANCE_LEGACY_ALIAS,
@@ -46,7 +46,7 @@ from ._video_catalog import (
     validate_fal_video_duration,
     validate_fal_video_resolution,
 )
-from ._video_invoke import invoke_fal_video
+from ._video_invoke import download_fal_video, invoke_fal_video, parse_fal_video_response
 
 __all__ = [
     "FAL_I2I_CATALOG",
@@ -69,6 +69,7 @@ __all__ = [
     "_parse_images_response",
     "cost_tier_hint",
     "derive_resolution_and_aspect",
+    "download_fal_video",
     "get_fal_i2i_spec",
     "get_fal_t2i_spec",
     "get_fal_video_spec",
@@ -80,7 +81,9 @@ __all__ = [
     "is_fal_t2i_model",
     "is_fal_video_model",
     "normalize_fal_model_id",
+    "parse_fal_video_response",
     "resolve_image_for_fal_sync",
+    "resolve_video_for_fal_sync",
     "validate_fal_aspect_ratio",
     "validate_fal_video_aspect_ratio",
     "validate_fal_video_duration",
