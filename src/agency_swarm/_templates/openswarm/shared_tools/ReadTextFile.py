@@ -11,7 +11,7 @@ from shared_tools.path_safety import (
     READABLE_TEXT_EXTENSIONS,
     PathNotAllowedError,
     is_binary_bytes,
-    is_sensitive_filename,
+    is_sensitive_path,
     read_text_with_fallback,
     resolve_allowed_path,
 )
@@ -74,10 +74,11 @@ class ReadTextFile(BaseTool):  # type: ignore[metaclass]
         if not resolved.is_file():
             return f"Error: Path is not a regular file: {resolved}"
 
-        if is_sensitive_filename(resolved.name):
+        if is_sensitive_path(resolved):
             return (
-                f"Error: Refusing to read sensitive file: {resolved.name}. "
-                "Files such as .env, private keys, and credential bundles are blocked."
+                f"Error: Refusing to read sensitive path: {resolved}. "
+                "Files such as .env and private keys, and anything under "
+                ".ssh / .aws / .gcloud / .azure / .gnupg / .kube, are blocked."
             )
 
         suffix = resolved.suffix.lower()

@@ -12,8 +12,10 @@ from shared_tools.path_safety import (
     DEFAULT_MAX_BYTES,
     READABLE_TEXT_EXTENSIONS,
     PathNotAllowedError,
+    excluded_dirs_note,
     is_binary_bytes,
-    is_sensitive_filename,
+    is_sensitive_path,
+    iter_allowed_files,
     read_text_with_fallback,
     resolve_allowed_path,
 )
@@ -26,13 +28,20 @@ HARD_CONTEXT_LINES = 10
 
 class SearchTextFiles(BaseTool):  # type: ignore[metaclass]
     """
-    Search text files under an allowed project directory for a regular-expression pattern.
+    Search text files under an allowed project directory for a pattern.
+
+    By default the pattern is matched as a **literal string** (so a dot, parentheses,
+    plus, etc. are matched as themselves). Set ``regex=True`` to interpret the
+    pattern as a Python regular expression.
 
     Walks only inside allowed project roots (current project root, ./mnt, and any
     explicitly configured project folder via OPENSWARM_PROJECT_FOLDER or
-    OPENSWARM_ALLOWED_READ_DIRS). Skips sensitive files (.env, private keys, etc.),
-    binary files, oversized files, and files whose extension is not in the allowed
-    text-extension list.
+    OPENSWARM_ALLOWED_READ_DIRS). Skips sensitive paths (.env, private keys, and
+    anything under .ssh / .aws / .gcloud / .azure / .gnupg / .kube), binary files,
+    oversized files, files whose extension is not in the allowed text-extension
+    list, and recursive descents into noisy/heavy directories (.git, .venv,
+    node_modules, __pycache__, .pytest_cache, .mypy_cache, .ruff_cache, dist,
+    build, .playwright-browsers). Set include_excluded_dirs=True to opt back in.
 
     Use this tool to grep through long project docs or source files before reading
     them in full with ReadTextFile.
@@ -41,8 +50,9 @@ class SearchTextFiles(BaseTool):  # type: ignore[metaclass]
     pattern: str = Field(
         ...,
         description=(
-            "Python regular expression to search for. Use '\\b' for word boundaries "
-            "and re.escape-safe text for literal matches."
+            "Text to search for. Treated as a literal string by default (regex "
+            "metacharacters are escaped). Set regex=True to interpret it as a "
+            "Python regular expression."
         ),
     )
     directory: str = Field(
@@ -58,11 +68,26 @@ class SearchTextFiles(BaseTool):  # type: ignore[metaclass]
     )
     file_glob: str = Field(
         default="*",
-        description="Glob applied to file names before searching (e.g. '*.md', '*.py').",
+        description="fnmatch pattern applied to file names before searching (e.g. '*.md', '*.py').",
+    )
+    regex: bool = Field(
+        default=False,
+        description=(
+            "If False (default), treat 'pattern' as a literal string. "
+            "If True, treat 'pattern' as a Python regular expression."
+        ),
     )
     case_sensitive: bool = Field(
         default=False,
         description="If False (default), pattern matches are case-insensitive.",
+    )
+    include_excluded_dirs: bool = Field(
+        default=False,
+        description=(
+            "If True, do NOT prune the default noisy/heavy directories "
+            "(.git, .venv, node_modules, __pycache__, .pytest_cache, .mypy_cache, "
+            ".ruff_cache, dist, build, .playwright-browsers). Use sparingly."
+        ),
     )
     context_lines: int = Field(
         default=DEFAULT_CONTEXT_LINES,
@@ -94,17 +119,25 @@ class SearchTextFiles(BaseTool):  # type: ignore[metaclass]
         if not resolved_dir.is_dir():
             return f"Error: Path is not a directory: {resolved_dir}"
 
+        if is_sensitive_path(resolved_dir):
+            return (
+                f"Error: Refusing to search sensitive directory: {resolved_dir}. "
+                "Directories under .ssh / .aws / .gcloud / .azure / .gnupg / .kube are blocked."
+            )
+
+        effective_pattern = self.pattern if self.regex else re.escape(self.pattern)
         flags = 0 if self.case_sensitive else re.IGNORECASE
         try:
-            regex = re.compile(self.pattern, flags)
+            compiled = re.compile(effective_pattern, flags)
         except re.error as exc:
             return f"Error: Invalid regex pattern: {exc}"
 
         try:
-            walker = (
-                resolved_dir.rglob(self.file_glob)
-                if self.recursive
-                else resolved_dir.glob(self.file_glob)
+            walker = iter_allowed_files(
+                resolved_dir,
+                pattern=self.file_glob,
+                recursive=self.recursive,
+                include_excluded_dirs=self.include_excluded_dirs,
             )
         except (OSError, ValueError) as exc:
             return f"Error: Failed to walk {resolved_dir}: {exc}"
@@ -116,13 +149,8 @@ class SearchTextFiles(BaseTool):  # type: ignore[metaclass]
         files_skipped_large = 0
         truncated = False
 
-        for entry in sorted(walker):
-            try:
-                if not entry.is_file():
-                    continue
-            except OSError:
-                continue
-            if is_sensitive_filename(entry.name):
+        for entry in walker:
+            if is_sensitive_path(entry):
                 files_skipped_sensitive += 1
                 continue
             if entry.suffix.lower() not in READABLE_TEXT_EXTENSIONS:
@@ -152,13 +180,12 @@ class SearchTextFiles(BaseTool):  # type: ignore[metaclass]
             files_searched += 1
             lines = text.splitlines()
             for idx, line in enumerate(lines):
-                if not regex.search(line):
+                if not compiled.search(line):
                     continue
                 lo = max(0, idx - self.context_lines)
                 hi = min(len(lines), idx + self.context_lines + 1)
                 snippet_lines = [
-                    f"{'>' if j == idx else ' '} {j + 1}: {lines[j]}"
-                    for j in range(lo, hi)
+                    f"{'>' if j == idx else ' '} {j + 1}: {lines[j]}" for j in range(lo, hi)
                 ]
                 match_blocks.append(f"{entry}:{idx + 1}\n" + "\n".join(snippet_lines))
                 if len(match_blocks) >= self.max_matches:
@@ -170,6 +197,7 @@ class SearchTextFiles(BaseTool):  # type: ignore[metaclass]
         header_parts = [
             f"directory: {resolved_dir}",
             f"pattern: {self.pattern!r}",
+            f"regex: {self.regex}",
             f"case_sensitive: {self.case_sensitive}",
             f"recursive: {self.recursive}",
             f"file_glob: {self.file_glob}",
@@ -177,6 +205,8 @@ class SearchTextFiles(BaseTool):  # type: ignore[metaclass]
             f"files_searched: {files_searched}",
             f"matches: {len(match_blocks)}",
         ]
+        if not self.include_excluded_dirs:
+            header_parts.append(f"pruned_dir_names: {excluded_dirs_note()}")
         if files_skipped_sensitive:
             header_parts.append(f"skipped_sensitive_files: {files_skipped_sensitive}")
         if files_skipped_binary:

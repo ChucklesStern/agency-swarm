@@ -16,10 +16,12 @@ import pytest
 from shared_tools import ListProjectFiles, ReadTextFile, SearchTextFiles
 from shared_tools.path_safety import (
     DEFAULT_MAX_BYTES,
+    EXCLUDED_DIRECTORY_NAMES,
     PathNotAllowedError,
     get_allowed_roots,
     is_binary_bytes,
     is_sensitive_filename,
+    is_sensitive_path,
     read_text_with_fallback,
     resolve_allowed_path,
 )
@@ -241,7 +243,7 @@ def test_read_text_file_blocks_sensitive_filenames(
 
     result = ReadTextFile(file_path=str(env_file)).run()
     assert result.startswith("Error:")
-    assert "sensitive file" in result
+    assert "sensitive" in result.lower()
     assert "supersecret" not in result
 
 
@@ -445,15 +447,24 @@ def test_search_text_files_skips_sensitive_and_disallowed(
     assert "skipped_binary_files: 1" in result
 
 
-def test_search_text_files_invalid_regex_returns_error(
+def test_search_text_files_invalid_regex_only_errors_when_regex_true(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Bad regex returns a friendly error rather than raising."""
+    """Default literal mode accepts regex-meta as text; regex=True surfaces invalid regex."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "x.md").write_text("hi", encoding="utf-8")
-    result = SearchTextFiles(pattern="(unclosed", directory=str(tmp_path)).run()
-    assert result.startswith("Error:")
-    assert "Invalid regex" in result
+    (tmp_path / "x.md").write_text("(unclosed somewhere\n", encoding="utf-8")
+
+    # Literal default: "(unclosed" is escaped and matches the literal substring fine.
+    ok = SearchTextFiles(pattern="(unclosed", directory=str(tmp_path), recursive=False).run()
+    assert not ok.startswith("Error:")
+    assert "matches: 1" in ok
+
+    # regex=True: "(unclosed" is an invalid Python regex, so we surface the parse error.
+    bad = SearchTextFiles(
+        pattern="(unclosed", directory=str(tmp_path), recursive=False, regex=True
+    ).run()
+    assert bad.startswith("Error:")
+    assert "Invalid regex" in bad
 
 
 def test_search_text_files_blocks_outside_root(
@@ -522,6 +533,203 @@ def test_acceptance_outside_mnt_is_refused_not_swallowed_silently(
     assert result.startswith("Error:")
     # The message must point the user at the safe path rather than at a deflection.
     assert "allowed project roots" in result
+
+
+# ---------------------------------------------------------------------------
+# Sensitive directory blocking (.ssh, .aws, .gcloud, .azure, .gnupg, .kube)
+# ---------------------------------------------------------------------------
+
+
+def test_is_sensitive_path_blocks_sensitive_dir_anywhere(tmp_path: Path) -> None:
+    """Any segment matching a sensitive directory name flags the whole path."""
+    assert is_sensitive_path(tmp_path / ".ssh" / "config")
+    assert is_sensitive_path(tmp_path / ".aws" / "credentials")
+    assert is_sensitive_path(tmp_path / ".gcloud" / "credentials.db")
+    assert is_sensitive_path(tmp_path / ".azure" / "config")
+    assert is_sensitive_path(tmp_path / ".gnupg" / "secring.gpg")
+    assert is_sensitive_path(tmp_path / ".kube" / "config")
+    # The directory itself is also flagged (last-segment match).
+    assert is_sensitive_path(tmp_path / ".ssh")
+    # Sibling .config remains allowed by default (too many legitimate uses).
+    assert not is_sensitive_path(tmp_path / ".config" / "ruff.toml")
+    assert not is_sensitive_path(tmp_path / "src" / "config.py")
+
+
+def test_read_text_file_blocks_inside_sensitive_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A text file inside .ssh/ is refused even with an explicit path under cwd."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".ssh").mkdir()
+    inside = tmp_path / ".ssh" / "notes.md"
+    inside.write_text("# important\n", encoding="utf-8")
+
+    result = ReadTextFile(file_path=str(inside)).run()
+    assert result.startswith("Error:")
+    assert "sensitive" in result.lower()
+
+
+def test_list_project_files_refuses_sensitive_directory_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Listing a directory whose own path is sensitive returns an error fast."""
+    monkeypatch.chdir(tmp_path)
+    aws = tmp_path / ".aws"
+    aws.mkdir()
+    (aws / "credentials").write_text("[default]\n", encoding="utf-8")
+
+    result = ListProjectFiles(directory=str(aws), recursive=True).run()
+    assert result.startswith("Error:")
+    assert "sensitive" in result.lower()
+
+
+def test_search_text_files_refuses_sensitive_directory_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same fail-fast for SearchTextFiles when the root is sensitive."""
+    monkeypatch.chdir(tmp_path)
+    aws = tmp_path / ".aws"
+    aws.mkdir()
+    (aws / "credentials").write_text("AWS_SECRET=zzz\n", encoding="utf-8")
+
+    result = SearchTextFiles(pattern="AWS_SECRET", directory=str(aws)).run()
+    assert result.startswith("Error:")
+    assert "sensitive" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Default directory pruning (.git, .venv, node_modules, etc.)
+# ---------------------------------------------------------------------------
+
+
+_NOISE_DIR_NAMES = [
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".playwright-browsers",
+]
+
+
+def test_excluded_directory_names_constant_matches_documented_list() -> None:
+    """The reviewer-specified prune list must match EXCLUDED_DIRECTORY_NAMES exactly."""
+    assert EXCLUDED_DIRECTORY_NAMES == frozenset(_NOISE_DIR_NAMES)
+
+
+def test_list_project_files_prunes_noisy_dirs_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recursive listing must not descend into .git, .venv, node_modules, etc."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.md").write_text("user content\n", encoding="utf-8")
+    for noise in _NOISE_DIR_NAMES:
+        d = tmp_path / noise
+        d.mkdir()
+        (d / "inner.md").write_text("hidden noise\n", encoding="utf-8")
+
+    result = ListProjectFiles(
+        directory=str(tmp_path), pattern="*.md", recursive=True
+    ).run()
+    body = result.split("---", 1)[1]
+
+    assert "matches: 1" in result
+    assert str(tmp_path / "notes.md") in body
+    for noise in _NOISE_DIR_NAMES:
+        assert noise not in body, f"{noise!r} should have been pruned but appeared in:\n{body}"
+    # Header must announce pruning so agents understand the contract.
+    assert "pruned_dir_names:" in result
+
+
+def test_list_project_files_include_excluded_dirs_opts_back_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """include_excluded_dirs=True restores access to .git, .venv, node_modules entries."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.md").write_text("ok", encoding="utf-8")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "inside.md").write_text("included\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "tracked.md").write_text("tracked\n", encoding="utf-8")
+
+    result = ListProjectFiles(
+        directory=str(tmp_path),
+        pattern="*.md",
+        recursive=True,
+        include_excluded_dirs=True,
+    ).run()
+    body = result.split("---", 1)[1]
+
+    assert "notes.md" in body
+    assert "inside.md" in body
+    assert "tracked.md" in body
+    assert "pruned_dir_names:" not in result
+
+
+def test_search_text_files_prunes_noisy_dirs_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recursive search must not descend into .git, .venv, node_modules, etc."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "good.md").write_text("hit here\n", encoding="utf-8")
+    for noise in _NOISE_DIR_NAMES:
+        d = tmp_path / noise
+        d.mkdir()
+        (d / "evil.md").write_text("hit here\n", encoding="utf-8")
+
+    result = SearchTextFiles(pattern="hit here", directory=str(tmp_path)).run()
+    body = result.split("---", 1)[1]
+
+    assert "matches: 1" in result
+    assert "good.md" in body
+    for noise in _NOISE_DIR_NAMES:
+        assert noise not in body, f"{noise!r} appeared in body: {body}"
+
+
+# ---------------------------------------------------------------------------
+# Literal-vs-regex search mode
+# ---------------------------------------------------------------------------
+
+
+def test_search_text_files_literal_default_does_not_treat_dot_as_wildcard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With regex=False (default), 'a.b' matches the literal 'a.b' only, not 'axb'."""
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "doc.md"
+    f.write_text("axb here\na.b also here\nfinal line\n", encoding="utf-8")
+
+    result = SearchTextFiles(pattern="a.b", directory=str(tmp_path), recursive=False).run()
+    body = result.split("---", 1)[1]
+
+    assert "regex: False" in result
+    assert "matches: 1" in result
+    assert "2: a.b also here" in body
+    assert "axb" not in body
+
+
+def test_search_text_files_regex_true_uses_regex_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With regex=True, 'a.b' is treated as a regex and matches both 'axb' and 'a.b'."""
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "doc.md"
+    f.write_text("axb here\na.b also here\n", encoding="utf-8")
+
+    result = SearchTextFiles(
+        pattern="a.b", directory=str(tmp_path), recursive=False, regex=True
+    ).run()
+    body = result.split("---", 1)[1]
+
+    assert "regex: True" in result
+    assert "matches: 2" in result
+    assert "axb" in body
+    assert "a.b" in body
 
 
 # Skip the symlink-escape test on Windows where the test setup can't always create symlinks

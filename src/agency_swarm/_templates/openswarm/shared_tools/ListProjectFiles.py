@@ -7,7 +7,9 @@ from pydantic import Field
 from agency_swarm.tools import BaseTool
 from shared_tools.path_safety import (
     PathNotAllowedError,
-    is_sensitive_filename,
+    excluded_dirs_note,
+    is_sensitive_path,
+    iter_allowed_files,
     resolve_allowed_path,
 )
 
@@ -21,11 +23,16 @@ class ListProjectFiles(BaseTool):  # type: ignore[metaclass]
 
     Walks only inside allowed project roots (current project root, ./mnt, and any
     explicitly configured project folder via OPENSWARM_PROJECT_FOLDER or
-    OPENSWARM_ALLOWED_READ_DIRS). Sensitive entries such as .env files and private
-    keys are omitted; directories are skipped (file paths only).
+    OPENSWARM_ALLOWED_READ_DIRS). Sensitive entries (.env, private keys, anything
+    under .ssh / .aws / .gcloud / .azure / .gnupg / .kube) are omitted, and noisy
+    or heavy directories (.git, .venv, node_modules, __pycache__, .pytest_cache,
+    .mypy_cache, .ruff_cache, dist, build, .playwright-browsers) are pruned at
+    walk time. Set include_excluded_dirs=True to opt back into those directories
+    on a per-call basis.
 
-    Use this when the user asks what's in a project subdirectory or under ./mnt before
-    deciding which file to read with ReadTextFile or grep with SearchTextFiles.
+    Use this when the user asks what's in a project subdirectory or under ./mnt
+    before deciding which file to read with ReadTextFile or grep with
+    SearchTextFiles.
     """
 
     directory: str = Field(
@@ -37,11 +44,19 @@ class ListProjectFiles(BaseTool):  # type: ignore[metaclass]
     )
     pattern: str = Field(
         default="*",
-        description="Glob pattern applied to file names (e.g. '*.md', 'hello_*.txt').",
+        description="fnmatch pattern applied to file names (e.g. '*.md', 'hello_*.txt').",
     )
     recursive: bool = Field(
         default=False,
         description="If True, recurse into subdirectories.",
+    )
+    include_excluded_dirs: bool = Field(
+        default=False,
+        description=(
+            "If True, do NOT prune the default noisy/heavy directories "
+            "(.git, .venv, node_modules, __pycache__, .pytest_cache, .mypy_cache, "
+            ".ruff_cache, dist, build, .playwright-browsers). Use sparingly."
+        ),
     )
     max_results: int = Field(
         default=DEFAULT_MAX_RESULTS,
@@ -64,25 +79,32 @@ class ListProjectFiles(BaseTool):  # type: ignore[metaclass]
         if not resolved.is_dir():
             return f"Error: Path is not a directory: {resolved}"
 
-        try:
-            iterator = (
-                resolved.rglob(self.pattern) if self.recursive else resolved.glob(self.pattern)
+        # Refuse outright if the directory itself sits inside a sensitive tree
+        # (e.g. user passed /home/me/.ssh as `directory`). Walking it would
+        # surface filenames that the per-file check would all reject anyway.
+        if is_sensitive_path(resolved):
+            return (
+                f"Error: Refusing to list sensitive directory: {resolved}. "
+                "Directories under .ssh / .aws / .gcloud / .azure / .gnupg / .kube are blocked."
             )
-        except (OSError, ValueError) as exc:
-            return f"Error: Failed to list {resolved}: {exc}"
 
         results: list[str] = []
         skipped_sensitive = 0
         skipped_outside = 0
         truncated = False
 
-        for entry in iterator:
-            try:
-                if not entry.is_file():
-                    continue
-            except OSError:
-                continue
-            if is_sensitive_filename(entry.name):
+        try:
+            walker = iter_allowed_files(
+                resolved,
+                pattern=self.pattern,
+                recursive=self.recursive,
+                include_excluded_dirs=self.include_excluded_dirs,
+            )
+        except (OSError, ValueError) as exc:
+            return f"Error: Failed to list {resolved}: {exc}"
+
+        for entry in walker:
+            if is_sensitive_path(entry):
                 skipped_sensitive += 1
                 continue
             # Re-validate each entry to defend against symlink-escape during traversal.
@@ -104,6 +126,8 @@ class ListProjectFiles(BaseTool):  # type: ignore[metaclass]
             f"recursive: {self.recursive}",
             f"matches: {len(results)}",
         ]
+        if not self.include_excluded_dirs:
+            header_parts.append(f"pruned_dir_names: {excluded_dirs_note()}")
         if skipped_sensitive:
             header_parts.append(f"skipped_sensitive: {skipped_sensitive}")
         if skipped_outside:

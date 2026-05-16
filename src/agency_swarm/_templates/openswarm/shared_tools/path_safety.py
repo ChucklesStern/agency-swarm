@@ -18,7 +18,9 @@ attempts cannot smuggle reads outside the real allowed tree.
 
 from __future__ import annotations
 
+import fnmatch
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 # Extensions the local text tools will open. Anything else is rejected.
@@ -75,6 +77,44 @@ SENSITIVE_SUFFIXES: frozenset[str] = frozenset(
 
 # Filename prefixes that flag dotenv variants like ".env.local" or ".env.prod".
 SENSITIVE_PREFIXES: tuple[str, ...] = (".env.",)
+
+# Directory names that mark credential trees. A path is refused if any
+# ancestor directory in its resolved form matches one of these names.
+# ``.config`` is deliberately omitted: many projects use it for lint / build
+# config trees (`.config/ruff.toml`, etc.), so blocking it by default would
+# produce too many false positives. Users with sensitive ``.config`` data
+# should keep it outside the project workspace.
+SENSITIVE_DIRECTORY_NAMES: frozenset[str] = frozenset(
+    {
+        ".ssh",
+        ".aws",
+        ".gcloud",
+        ".azure",
+        ".gnupg",
+        ".kube",
+    }
+)
+
+# Directory names pruned at walk time during recursive list/search to keep
+# results focused on the user's authored project content. Reading an
+# individual file inside one of these via an explicit ReadTextFile path is
+# still allowed (subject to the other safety checks); the prune only stops
+# noisy/heavy recursive descents.
+EXCLUDED_DIRECTORY_NAMES: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+        ".playwright-browsers",
+    }
+)
 
 # Max bytes a single ReadTextFile / SearchTextFiles read will accept.
 # Larger files require chunked reads via start_line / max_lines.
@@ -175,6 +215,22 @@ def is_sensitive_filename(name: str) -> bool:
     return False
 
 
+def is_sensitive_path(path: Path) -> bool:
+    """Return True if *path* is sensitive by filename OR by any path segment.
+
+    Works for both files and directories: if any component of the resolved
+    path (the leaf or any ancestor) matches ``SENSITIVE_DIRECTORY_NAMES``,
+    the path is refused. This means a file like ``~/.ssh/notes.md`` and the
+    directory ``~/.aws`` are both blocked.
+    """
+    if is_sensitive_filename(path.name):
+        return True
+    for part in path.parts:
+        if part in SENSITIVE_DIRECTORY_NAMES:
+            return True
+    return False
+
+
 def resolve_allowed_path(raw_path: str, *, must_exist: bool = True) -> Path:
     """Resolve *raw_path*, confirm it sits inside an allowed root, and return it.
 
@@ -230,3 +286,39 @@ def read_text_with_fallback(path: Path) -> tuple[str, str]:
         return raw.decode("utf-8"), "utf-8"
     except UnicodeDecodeError:
         return raw.decode("utf-8", errors="replace"), "utf-8 (with replacement)"
+
+
+def iter_allowed_files(
+    root: Path,
+    *,
+    pattern: str = "*",
+    recursive: bool = True,
+    include_excluded_dirs: bool = False,
+) -> Iterator[Path]:
+    """Walk *root* in name-sorted order, yielding files whose basename matches *pattern*.
+
+    Heavy / noisy directories (``EXCLUDED_DIRECTORY_NAMES``) are pruned at walk
+    time so recursive list / search never descends into ``.git``, ``.venv``,
+    ``node_modules``, etc. Pass ``include_excluded_dirs=True`` to opt back in.
+
+    Pattern matching is filename-only via :func:`fnmatch.fnmatch` (e.g.
+    ``"*.md"``, ``"hello_*.txt"``). Callers are responsible for any further
+    filtering — sensitive-path checks, extension allow-lists, binary sniffs,
+    etc. — and for re-validating each yielded entry against
+    :func:`resolve_allowed_path` to defend against symlink-escape during walk.
+    """
+    for current, dirs, files in os.walk(root):
+        if include_excluded_dirs:
+            dirs.sort()
+        else:
+            dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_DIRECTORY_NAMES)
+        if not recursive:
+            dirs.clear()
+        for fname in sorted(files):
+            if fnmatch.fnmatch(fname, pattern):
+                yield Path(current) / fname
+
+
+def excluded_dirs_note() -> str:
+    """One-line summary of the pruned directory names, for inclusion in tool responses."""
+    return ", ".join(sorted(EXCLUDED_DIRECTORY_NAMES))
