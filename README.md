@@ -89,7 +89,7 @@ Replace `sk-...` with your real key.
 Create a fresh directory (the scaffold refuses to overwrite an existing `agency.py`), `cd` into it, and run the OpenSwarm init.
 
 ```bash
-mkdir ~/agencies/my-first-swarm
+mkdir -p ~/agencies/my-first-swarm
 cd ~/agencies/my-first-swarm
 agency-swarm init openswarm
 ```
@@ -169,7 +169,7 @@ The recommended workflow today:
 2. Re-scaffold into a fresh directory:
 
    ```bash
-   mkdir ~/agencies/my-first-swarm-v2
+   mkdir -p ~/agencies/my-first-swarm-v2
    cd ~/agencies/my-first-swarm-v2
    agency-swarm init openswarm
    ```
