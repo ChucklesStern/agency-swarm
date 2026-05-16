@@ -190,6 +190,11 @@ def _parse_video_response(spec: FalVideoSpec, result: dict) -> str:
 
     All seven backing endpoints return `result["video"]["url"]` (singular File
     object, not an array). Verified Phase 0.
+
+    Strict, spec-aware variant used by `invoke_fal_video`. Raises with the
+    spec's `user_id` in the error message so generation failures are easy to
+    trace. Callers that need a non-raising contract should use the public
+    `parse_fal_video_response` helper instead.
     """
     video = result.get("video") if isinstance(result, dict) else None
     if not isinstance(video, dict):
@@ -205,8 +210,65 @@ def _parse_video_response(spec: FalVideoSpec, result: dict) -> str:
     return url
 
 
+def parse_fal_video_response(result: dict) -> str | None:
+    """Return the output video URL from a FAL response, or None when missing.
+
+    Parses only. Does NOT download, save, or transform. Does NOT raise on
+    malformed responses — callers handle the missing-URL case (typically with
+    a tool-specific error message). For the strict, spec-aware variant used
+    inside `invoke_fal_video`, see `_parse_video_response`.
+
+    Contract (matches the pre-PR-4 `EditVideoContent._extract_video_url`
+    verbatim — including the "raw return" semantics: an empty string in
+    `result["video"]["url"]` is returned as `""`, NOT coerced to None):
+        - `result["video"]` is a dict → return `result["video"].get("url")`.
+        - Any other shape → return None.
+    """
+    video = result.get("video") if isinstance(result, dict) else None
+    if not isinstance(video, dict):
+        return None
+    return video.get("url")
+
+
+def download_fal_video(url: str, output_path):
+    """Download a FAL video URL to `output_path` using sync streaming I/O.
+
+    Parses nothing and creates no derivatives. Streams the response in chunks
+    via `httpx.Client.stream(...)`, writes them incrementally to disk, calls
+    `response.raise_for_status()` so HTTP errors surface, and creates the
+    output's parent directory if it does not already exist. Returns the
+    resolved local `Path`.
+
+    Does NOT extract spritesheets, thumbnails, last frames, or any other
+    generation-artifact derivatives — callers handle those tool-side.
+
+    Sync only. The async download helper used by `invoke_fal_video` is kept
+    separate (see `_download_video`); unifying sync/async download behavior
+    is intentionally out of scope for this refactor.
+    """
+    from pathlib import Path
+
+    import httpx
+
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with httpx.Client(timeout=120.0) as client:
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            with open(target, "wb") as out_file:
+                for chunk in response.iter_bytes():
+                    if chunk:
+                        out_file.write(chunk)
+    return target
+
+
 async def _download_video(url: str, output_path: str, timeout: float = 120.0) -> None:
-    """Stream a FAL result URL to a local file."""
+    """Stream a FAL result URL to a local file (async, used by `invoke_fal_video`).
+
+    Kept separate from the sync `download_fal_video` per the PR 4 plan: the
+    video generation flow runs inside an async event loop with `asyncio.to_thread`
+    elsewhere, and unifying the two download paths is a later refactor.
+    """
     import httpx
 
     async with httpx.AsyncClient(timeout=timeout) as http:

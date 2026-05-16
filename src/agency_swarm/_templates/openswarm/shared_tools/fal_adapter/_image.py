@@ -349,50 +349,10 @@ def _invoke_recraft_fanout(
 # ---------------------------------------------------------------------------
 
 
-def resolve_image_for_fal_sync(fal, product_name: str, ref: str) -> str:
-    """Resolve a tool-side image reference into a FAL-usable URL.
-
-    Accepts the same three reference shapes as the rest of the codebase
-    (matches `RemoveBackground._resolve_to_upload_url` and the Seedance I2V
-    path verbatim, so the contract is uniform):
-
-    1. HTTP(S) URL → passed through unchanged.
-    2. Absolute or relative local path → uploaded via `fal.upload_file()` to
-       produce a FAL-storage URL.
-    3. Generated-image name (no extension) → looked up under
-       `mnt/{product_name}/generated_images/`, then uploaded.
-
-    Lives in Tier B because `fal.upload_file` needs an active `fal_client`
-    handle. The image_io helpers are imported lazily so this function does
-    not pull `PIL` / `image_io` into Tier A.
-    """
-    from urllib.parse import urlparse
-
-    from image_generation_agent.tools.utils.image_io import (
-        find_image_path_from_name,
-        get_images_dir,
-    )
-
-    ref = (ref or "").strip()
-    if not ref:
-        raise ValueError("image reference must not be empty")
-
-    parsed = urlparse(ref)
-    if parsed.scheme in ("http", "https"):
-        return ref
-
-    from pathlib import Path
-
-    candidate = Path(ref).expanduser().resolve()
-    if candidate.exists():
-        return fal.upload_file(str(candidate))
-
-    images_dir = get_images_dir(product_name)
-    by_name = find_image_path_from_name(images_dir, ref)
-    if by_name is not None:
-        return fal.upload_file(str(by_name))
-
-    raise FileNotFoundError(f"Could not resolve image reference '{ref}' as URL, path, or name in {images_dir}.")
+# `resolve_image_for_fal_sync` moved to `_resources.py` in PR 4. Re-imported here
+# so any internal callers that historically imported it from this module continue
+# to resolve. Public callers should import from `shared_tools.fal_adapter`.
+from ._resources import resolve_image_for_fal_sync  # noqa: E402, F401
 
 
 def _build_flux_kontext_request(
